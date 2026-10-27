@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "AL Media Assistant"
+description = "An admin dashboard and WhatsApp automation backend for AL Media tuition classes, managing student conversations, delivery tracking, class content, and recording requests."
+version = "1.0.0"
+id = "artifacts/media-class-assistant"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 25131
+
+[services.development]
+run = "pnpm --filter @workspace/media-class-assistant run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/media-class-assistant", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/media-class-assistant/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "25131"
+BASE_PATH = "/"

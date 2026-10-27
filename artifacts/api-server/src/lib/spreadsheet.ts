@@ -1,0 +1,86 @@
+import * as XLSX from "xlsx";
+
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const ALLOWED_EXTENSIONS = new Set([".csv", ".xlsx"]);
+
+export interface TuteDeliveryColumnMap {
+  phoneNumber: string;
+  studentName: string;
+  trackingNumber: string;
+  address: string;
+}
+
+export interface SpreadsheetRow {
+  [column: string]: string;
+}
+
+export interface ParsedSpreadsheet {
+  columns: string[];
+  rows: SpreadsheetRow[];
+}
+
+export function decodeSpreadsheet(fileName: string, fileData: string): Buffer {
+  const extension = fileName.toLowerCase().slice(fileName.lastIndexOf("."));
+  if (!ALLOWED_EXTENSIONS.has(extension)) {
+    throw new Error("Choose an .xlsx or .csv file");
+  }
+  if (!fileData || fileData.length > 15_000_000) {
+    throw new Error("The spreadsheet is empty or too large");
+  }
+
+  const normalized = fileData.replace(/\s/g, "");
+  if (!/^[a-zA-Z0-9+/]*={0,2}$/.test(normalized)) {
+    throw new Error("The spreadsheet data is not valid base64");
+  }
+  const buffer = Buffer.from(normalized, "base64");
+  if (
+    buffer.length === 0 ||
+    buffer.length > MAX_FILE_BYTES ||
+    buffer.toString("base64").replace(/=+$/, "") !== normalized.replace(/=+$/, "")
+  ) {
+    throw new Error("The spreadsheet must be smaller than 10 MB");
+  }
+  return buffer;
+}
+
+export function parseSpreadsheet(fileName: string, fileData: string): ParsedSpreadsheet {
+  const buffer = decodeSpreadsheet(fileName, fileData);
+  const workbook = XLSX.read(buffer, { type: "buffer", raw: false });
+  const firstSheetName = workbook.SheetNames[0];
+  if (!firstSheetName) throw new Error("The spreadsheet does not contain a worksheet");
+  const sheet = workbook.Sheets[firstSheetName];
+  const sourceRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+    defval: "",
+    raw: false,
+  });
+  const columns = sourceRows.length
+    ? Object.keys(sourceRows[0])
+    : XLSX.utils.sheet_to_json<string[]>(sheet, { header: 1, blankrows: false })[0] ?? [];
+  const rows = sourceRows.map((row) =>
+    Object.fromEntries(columns.map((column) => [column, String(row[column] ?? "").trim()])),
+  );
+  return { columns, rows };
+}
+
+export function normalizePhoneNumber(value: string): string {
+  const cleaned = value.trim().replace(/[()\s.-]/g, "");
+  if (/^0\d{9}$/.test(cleaned)) return `+94${cleaned.slice(1)}`;
+  if (/^94\d{9}$/.test(cleaned)) return `+${cleaned}`;
+  if (/^\+\d{8,15}$/.test(cleaned)) return cleaned;
+  throw new Error("Enter a valid phone number in 07XXXXXXXX or E.164 format");
+}
+
+export function deliveryColumnMapFromHeaders(columns: string[]): TuteDeliveryColumnMap {
+  const normalized = new Map(columns.map((column) => [column.toLowerCase().replace(/[^a-z0-9]/g, ""), column]));
+  const find = (candidates: string[], fallbackIndex: number): string =>
+    candidates.map((candidate) => normalized.get(candidate)).find(Boolean) ??
+    columns[fallbackIndex] ??
+    "";
+
+  return {
+    phoneNumber: find(["phonenumber", "phone", "mobile", "contactnumber"], 0),
+    studentName: find(["studentname", "name"], 1),
+    trackingNumber: find(["trackingno", "trackingnumber", "tracking", "waybill"], 2),
+    address: find(["address", "postaladdress"], 3),
+  };
+}

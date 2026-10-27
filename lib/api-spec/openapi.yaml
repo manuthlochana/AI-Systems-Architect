@@ -3,13 +3,25 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: API for the AL Media WhatsApp automation and admin dashboard
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: admin
+    description: Admin session and dashboard operations
+  - name: conversations
+    description: Student WhatsApp conversations
+  - name: deliveries
+    description: Tute delivery tracking and import
+  - name: content
+    description: Timetables, fees, and announcements
+  - name: recordings
+    description: Recording access requests
+  - name: whatsapp
+    description: YCloud WhatsApp webhook
 paths:
   /healthz:
     get:
@@ -24,7 +36,340 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /admin/status:
+    get:
+      operationId: getAdminStatus
+      tags: [admin]
+      summary: Get admin and integration setup status
+      responses:
+        "200":
+          description: Setup status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminStatus"
+  /admin/session:
+    post:
+      operationId: createAdminSession
+      tags: [admin]
+      summary: Sign in to the admin dashboard
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminLoginInput"
+      responses:
+        "200":
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminSession"
+        "401":
+          description: Invalid admin key
+        "503":
+          description: Admin key or session signing secret is not configured
+    delete:
+      operationId: deleteAdminSession
+      tags: [admin]
+      summary: Sign out of the admin dashboard
+      responses:
+        "204":
+          description: Signed out
+  /dashboard/summary:
+    get:
+      operationId: getDashboardSummary
+      tags: [admin]
+      summary: Get dashboard totals and recent activity
+      security:
+        - AdminSession: []
+      responses:
+        "200":
+          description: Dashboard summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummary"
+        "401":
+          description: Admin session required
+  /conversations:
+    get:
+      operationId: getConversations
+      tags: [conversations]
+      summary: List recent conversations
+      security:
+        - AdminSession: []
+      parameters:
+        - in: query
+          name: mode
+          schema:
+            type: string
+            enum: [bot, human, all]
+            default: human
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+      responses:
+        "200":
+          description: Conversations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Conversation"
+        "401":
+          description: Admin session required
+  /conversations/{phoneNumber}/mode:
+    patch:
+      operationId: setConversationMode
+      tags: [conversations]
+      summary: Change a conversation between bot and human modes
+      security:
+        - AdminSession: []
+      parameters:
+        - in: path
+          name: phoneNumber
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConversationModeInput"
+      responses:
+        "200":
+          description: Updated conversation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Conversation"
+        "401":
+          description: Admin session required
+        "404":
+          description: Conversation not found
+  /deliveries:
+    get:
+      operationId: getDeliveries
+      tags: [deliveries]
+      summary: List tute deliveries for a month
+      security:
+        - AdminSession: []
+      parameters:
+        - in: query
+          name: month
+          required: true
+          schema:
+            type: string
+            pattern: "^\\d{4}-\\d{2}$"
+      responses:
+        "200":
+          description: Deliveries for the selected month
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TuteDelivery"
+        "401":
+          description: Admin session required
+  /deliveries/import:
+    post:
+      operationId: importTuteDeliveries
+      tags: [deliveries]
+      summary: Import a delivery spreadsheet
+      security:
+        - AdminSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TuteDeliveryImportInput"
+      responses:
+        "200":
+          description: Import results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TuteDeliveryImportResult"
+        "400":
+          description: Invalid file or month
+        "401":
+          description: Admin session required
+  /deliveries/inspect:
+    post:
+      operationId: inspectTuteDeliveryFile
+      tags: [deliveries]
+      summary: Read spreadsheet columns and a short preview
+      security:
+        - AdminSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TuteDeliveryFileInput"
+      responses:
+        "200":
+          description: Spreadsheet columns and preview rows
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TuteDeliveryInspection"
+        "400":
+          description: Invalid file
+        "401":
+          description: Admin session required
+  /content:
+    get:
+      operationId: getDynamicContent
+      tags: [content]
+      summary: List editable timetables and announcements
+      security:
+        - AdminSession: []
+      responses:
+        "200":
+          description: Dynamic content entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DynamicContent"
+        "401":
+          description: Admin session required
+  /content/{key}:
+    put:
+      operationId: upsertDynamicContent
+      tags: [content]
+      summary: Create or update a timetable or announcement
+      security:
+        - AdminSession: []
+      parameters:
+        - in: path
+          name: key
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DynamicContentInput"
+      responses:
+        "200":
+          description: Saved content entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DynamicContent"
+        "401":
+          description: Admin session required
+  /recording-requests:
+    get:
+      operationId: getRecordingRequests
+      tags: [recordings]
+      summary: List recording access requests
+      security:
+        - AdminSession: []
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [pending, approved, rejected, all]
+            default: pending
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+      responses:
+        "200":
+          description: Recording requests
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RecordingRequest"
+        "401":
+          description: Admin session required
+  /recording-requests/{id}/approve:
+    post:
+      operationId: approveRecordingRequest
+      tags: [recordings]
+      summary: Approve a recording request and send its link
+      security:
+        - AdminSession: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecordingApprovalInput"
+      responses:
+        "200":
+          description: Recording request approved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecordingRequest"
+        "400":
+          description: Invalid recording URL or WhatsApp is not configured
+        "401":
+          description: Admin session required
+        "404":
+          description: Recording request not found
+  /webhook/whatsapp:
+    post:
+      operationId: receiveWhatsAppWebhook
+      tags: [whatsapp]
+      summary: Receive YCloud WhatsApp inbound messages
+      description: Configure YCloud to send inbound events to this endpoint.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WhatsAppWebhookInput"
+      responses:
+        "200":
+          description: Webhook accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookAcknowledgement"
+        "400":
+          description: Invalid event
+        "503":
+          description: WhatsApp automation is not configured
 components:
+  securitySchemes:
+    AdminSession:
+      type: apiKey
+      in: cookie
+      name: al_media_admin
   schemas:
     HealthStatus:
       type: object
@@ -33,4 +378,162 @@ components:
           type: string
       required:
         - status
+    AdminStatus:
+      type: object
+      properties:
+        adminConfigured: { type: boolean }
+        sessionConfigured: { type: boolean }
+        databaseConfigured: { type: boolean }
+        geminiConfigured: { type: boolean }
+        ycloudConfigured: { type: boolean }
+        authenticated: { type: boolean }
+      required: [adminConfigured, sessionConfigured, databaseConfigured, geminiConfigured, ycloudConfigured, authenticated]
+    AdminLoginInput:
+      type: object
+      properties:
+        key: { type: string, minLength: 1, maxLength: 512 }
+      required: [key]
+    AdminSession:
+      type: object
+      properties:
+        authenticated: { type: boolean }
+      required: [authenticated]
+    DashboardSummary:
+      type: object
+      properties:
+        humanQueueCount: { type: integer }
+        pendingRecordingCount: { type: integer }
+        deliveriesThisMonth: { type: integer }
+        recentConversationCount: { type: integer }
+        recentActivity:
+          type: array
+          items: { $ref: "#/components/schemas/RecentActivity" }
+      required: [humanQueueCount, pendingRecordingCount, deliveriesThisMonth, recentConversationCount, recentActivity]
+    RecentActivity:
+      type: object
+      properties:
+        id: { type: string }
+        description: { type: string }
+        at: { type: string, format: date-time }
+        kind: { type: string, enum: [conversation, delivery, recording, content] }
+      required: [id, description, at, kind]
+    Conversation:
+      type: object
+      properties:
+        phoneNumber: { type: string }
+        studentName: { type: ["string", "null"] }
+        batch: { type: string, enum: ["2027", "2028", unknown] }
+        studentType: { type: string, enum: [new, existing] }
+        mode: { type: string, enum: [bot, human] }
+        lastIntent: { type: ["string", "null"] }
+        lastMessageAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        lastMessage: { type: ["string", "null"] }
+      required: [phoneNumber, batch, studentType, mode, lastMessageAt, createdAt]
+    ConversationModeInput:
+      type: object
+      properties:
+        mode: { type: string, enum: [bot, human] }
+      required: [mode]
+    TuteDelivery:
+      type: object
+      properties:
+        id: { type: integer }
+        phoneNumber: { type: string }
+        studentName: { type: ["string", "null"] }
+        month: { type: string }
+        trackingNumber: { type: string }
+        address: { type: ["string", "null"] }
+        status: { type: string, enum: [Dispatched, Delivered, Returned] }
+        createdAt: { type: string, format: date-time }
+      required: [id, phoneNumber, month, trackingNumber, status, createdAt]
+    TuteDeliveryImportInput:
+      type: object
+      properties:
+        month: { type: string, pattern: "^\\d{4}-\\d{2}$" }
+        fileName: { type: string, maxLength: 255 }
+        fileData: { type: string, maxLength: 15000000 }
+        columnMap: { $ref: "#/components/schemas/TuteDeliveryColumnMap" }
+      required: [month, fileName, fileData, columnMap]
+    TuteDeliveryFileInput:
+      type: object
+      properties:
+        fileName: { type: string, maxLength: 255 }
+        fileData: { type: string, maxLength: 15000000 }
+      required: [fileName, fileData]
+    TuteDeliveryColumnMap:
+      type: object
+      properties:
+        phoneNumber: { type: string, minLength: 1, maxLength: 200 }
+        studentName: { type: string, minLength: 1, maxLength: 200 }
+        trackingNumber: { type: string, minLength: 1, maxLength: 200 }
+        address: { type: string, minLength: 1, maxLength: 200 }
+      required: [phoneNumber, studentName, trackingNumber, address]
+    TuteDeliveryInspection:
+      type: object
+      properties:
+        columns:
+          type: array
+          items: { type: string }
+        previewRows:
+          type: array
+          items:
+            type: object
+            additionalProperties:
+              type: string
+        rowCount: { type: integer }
+      required: [columns, previewRows, rowCount]
+    TuteDeliveryImportResult:
+      type: object
+      properties:
+        processed: { type: integer }
+        inserted: { type: integer }
+        updated: { type: integer }
+        skipped: { type: integer }
+        errors:
+          type: array
+          items: { type: string }
+      required: [processed, inserted, updated, skipped, errors]
+    DynamicContent:
+      type: object
+      properties:
+        key: { type: string }
+        category: { type: string, enum: [timetable, pricing, general] }
+        title: { type: string }
+        content: { type: string }
+        updatedAt: { type: string, format: date-time }
+      required: [key, category, title, content, updatedAt]
+    DynamicContentInput:
+      type: object
+      properties:
+        category: { type: string, enum: [timetable, pricing, general] }
+        title: { type: string, minLength: 1, maxLength: 200 }
+        content: { type: string, maxLength: 50000 }
+      required: [category, title, content]
+    RecordingRequest:
+      type: object
+      properties:
+        id: { type: integer }
+        phoneNumber: { type: string }
+        studentName: { type: ["string", "null"] }
+        batch: { type: ["string", "null"] }
+        requestedDate: { type: string }
+        classType: { type: ["string", "null"], enum: [Theory, Revision, null] }
+        status: { type: string, enum: [pending, approved, rejected] }
+        zoomLink: { type: ["string", "null"] }
+        createdAt: { type: string, format: date-time }
+      required: [id, phoneNumber, requestedDate, status, createdAt]
+    RecordingApprovalInput:
+      type: object
+      properties:
+        zoomLink: { type: string, format: uri, maxLength: 2048 }
+      required: [zoomLink]
+    WhatsAppWebhookInput:
+      type: object
+      additionalProperties: true
+    WebhookAcknowledgement:
+      type: object
+      properties:
+        accepted: { type: boolean }
+      required: [accepted]
 
