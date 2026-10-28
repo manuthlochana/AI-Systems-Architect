@@ -5,6 +5,7 @@ import {
   serial,
   text,
   timestamp,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { z } from "zod/v4";
 import { batchEnum, classTypeEnum, recordingStatusEnum } from "./enums";
@@ -20,6 +21,7 @@ export const recordingRequestsTable = pgTable(
     classType: classTypeEnum("class_type"),
     status: recordingStatusEnum("status").notNull().default("pending"),
     zoomLink: text("zoom_link"),
+    sourceMessageId: text("source_message_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -28,6 +30,7 @@ export const recordingRequestsTable = pgTable(
       table.createdAt,
     ),
     index("recording_requests_phone_idx").on(table.phoneNumber),
+    uniqueIndex("recording_requests_source_message_unique").on(table.sourceMessageId),
   ],
 );
 

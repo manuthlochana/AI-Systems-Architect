@@ -11,7 +11,7 @@ import {
   useApproveRecordingRequest, useCreateAdminSession, useDeleteAdminSession,
   useGetAdminStatus, useGetConversations, useGetDashboardSummary, useGetDeliveries,
   useGetDynamicContent, useGetRecordingRequests, useHealthCheck, useImportTuteDeliveries,
-  useSetConversationMode, useUpsertDynamicContent,
+  useInspectTuteDeliveryFile, useSetConversationMode, useUpsertDynamicContent,
 } from '@workspace/api-client-react';
 
 const queryClient = new QueryClient({
@@ -37,6 +37,8 @@ function AppContent() {
   const [loginKey, setLoginKey] = useState('');
   const [loginError, setLoginError] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [inspection, setInspection] = useState<{ columns: string[]; previewRows: Array<Record<string, string>>; rowCount: number } | null>(null);
+  const [columnMap, setColumnMap] = useState({ phoneNumber: '', studentName: '', trackingNumber: '', address: '' });
   const [importFeedback, setImportFeedback] = useState('');
   const [importError, setImportError] = useState('');
   const [activeContentKey, setActiveContentKey] = useState('');
@@ -51,21 +53,22 @@ function AppContent() {
   const [approvalError, setApprovalError] = useState('');
   const [notice, setNotice] = useState('');
 
-  const statusQuery = useGetAdminStatus();
-  const health = useHealthCheck();
+  const statusQuery = useGetAdminStatus({ request: { credentials: 'include' } });
+  const health = useHealthCheck({ request: { credentials: 'include' } });
   const status = statusQuery.data;
   const authenticated = Boolean(status?.authenticated);
-  const summaryQuery = useGetDashboardSummary({ query: { enabled: authenticated, queryKey: getGetDashboardSummaryQueryKey() } });
-  const conversationsQuery = useGetConversations({ mode: 'all', limit: 100 }, { query: { enabled: authenticated, queryKey: getGetConversationsQueryKey({ mode: 'all', limit: 100 }) } });
-  const deliveriesQuery = useGetDeliveries({ month }, { query: { enabled: authenticated, queryKey: getGetDeliveriesQueryKey({ month }) } });
-  const contentQuery = useGetDynamicContent({ query: { enabled: authenticated, queryKey: getGetDynamicContentQueryKey() } });
-  const recordingsQuery = useGetRecordingRequests({ status: 'all', limit: 100 }, { query: { enabled: authenticated, queryKey: getGetRecordingRequestsQueryKey({ status: 'all', limit: 100 }) } });
-  const createSession = useCreateAdminSession();
-  const deleteSession = useDeleteAdminSession();
-  const setMode = useSetConversationMode();
-  const importDeliveries = useImportTuteDeliveries();
-  const upsertContent = useUpsertDynamicContent();
-  const approveRecording = useApproveRecordingRequest();
+  const summaryQuery = useGetDashboardSummary({ query: { enabled: authenticated, queryKey: getGetDashboardSummaryQueryKey() }, request: { credentials: 'include' } });
+  const conversationsQuery = useGetConversations({ mode: 'all', limit: 100 }, { query: { enabled: authenticated, queryKey: getGetConversationsQueryKey({ mode: 'all', limit: 100 }) }, request: { credentials: 'include' } });
+  const deliveriesQuery = useGetDeliveries({ month }, { query: { enabled: authenticated, queryKey: getGetDeliveriesQueryKey({ month }) }, request: { credentials: 'include' } });
+  const contentQuery = useGetDynamicContent({ query: { enabled: authenticated, queryKey: getGetDynamicContentQueryKey() }, request: { credentials: 'include' } });
+  const recordingsQuery = useGetRecordingRequests({ status: 'all', limit: 100 }, { query: { enabled: authenticated, queryKey: getGetRecordingRequestsQueryKey({ status: 'all', limit: 100 }) }, request: { credentials: 'include' } });
+  const createSession = useCreateAdminSession({ request: { credentials: 'include' } });
+  const deleteSession = useDeleteAdminSession({ request: { credentials: 'include' } });
+  const setMode = useSetConversationMode({ request: { credentials: 'include' } });
+  const importDeliveries = useImportTuteDeliveries({ request: { credentials: 'include' } });
+  const inspectDeliveryFile = useInspectTuteDeliveryFile({ request: { credentials: 'include' } });
+  const upsertContent = useUpsertDynamicContent({ request: { credentials: 'include' } });
+  const approveRecording = useApproveRecordingRequest({ request: { credentials: 'include' } });
 
   const conversations = conversationsQuery.data ?? [];
   const deliveries = deliveriesQuery.data ?? [];
@@ -85,22 +88,50 @@ function AppContent() {
     setContentError('');
   }
 
-  async function handleImport() {
+  async function fileAsBase64(file: File) {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = String(reader.result ?? '');
+        const separator = result.indexOf(',');
+        resolve(separator >= 0 ? result.slice(separator + 1) : result);
+      };
+      reader.onerror = () => reject(new Error('Could not read this file.'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function inspectFile() {
     if (!selectedFile) return;
     setImportFeedback('');
     setImportError('');
     try {
-      const fileData = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const result = String(reader.result ?? '');
-          const separator = result.indexOf(',');
-          resolve(separator >= 0 ? result.slice(separator + 1) : result);
-        };
-        reader.onerror = () => reject(new Error('Could not read this file.'));
-        reader.readAsDataURL(selectedFile);
+      const fileData = await fileAsBase64(selectedFile);
+      inspectDeliveryFile.mutate({ data: { fileName: selectedFile.name, fileData } }, {
+        onSuccess: (result) => {
+          setInspection(result);
+          const findColumn = (terms: string[]) => result.columns.find((column) => terms.some((term) => column.toLowerCase().replace(/[^a-z]/g, '').includes(term)));
+          setColumnMap({
+            phoneNumber: findColumn(['phone', 'mobile', 'whatsapp']) ?? '',
+            studentName: findColumn(['name', 'student']) ?? '',
+            trackingNumber: findColumn(['tracking', 'track', 'waybill']) ?? '',
+            address: findColumn(['address', 'delivery']) ?? '',
+          });
+        },
+        onError: (error) => setImportError(errorText(error)),
       });
-      importDeliveries.mutate({ data: { month, fileName: selectedFile.name, fileData } }, {
+    } catch (error) {
+      setImportError(errorText(error));
+    }
+  }
+
+  async function handleImport() {
+    if (!selectedFile || !inspection || Object.values(columnMap).some((value) => !value)) return;
+    setImportFeedback('');
+    setImportError('');
+    try {
+      const fileData = await fileAsBase64(selectedFile);
+      importDeliveries.mutate({ data: { month, fileName: selectedFile.name, fileData, columnMap } }, {
         onSuccess: (result) => {
           setImportFeedback(`Processed ${result.processed} rows · ${result.inserted} added · ${result.updated} updated · ${result.skipped} skipped.`);
           setImportError(result.errors?.length ? result.errors.join(' · ') : '');
@@ -150,10 +181,10 @@ function AppContent() {
     });
   }
 
-  const integrations = status ? [
+  const integrations: Array<[string, boolean]> = status ? [
     ['Admin key', status.adminConfigured], ['Session secret', status.sessionConfigured],
     ['Database', status.databaseConfigured], ['Gemini', status.geminiConfigured], ['YCloud', status.ycloudConfigured],
-  ] as const : [];
+  ] : [];
   const missingIntegrations = integrations.filter(([, ready]) => !ready);
   const isBusy = summaryQuery.isLoading || conversationsQuery.isLoading || deliveriesQuery.isLoading || contentQuery.isLoading || recordingsQuery.isLoading;
 
@@ -288,14 +319,35 @@ function AppContent() {
                       <input id="delivery-month" className="input month-input" type="month" value={month} onChange={(event) => setMonth(event.target.value)} data-testid="input-delivery-month" />
                     </div>
                     <label className={`upload-zone ${selectedFile ? 'has-file' : ''}`} htmlFor="delivery-file">
-                      <input id="delivery-file" type="file" accept=".csv,.xlsx,.xls,.ods" onChange={(event) => { setSelectedFile(event.target.files?.[0] ?? null); setImportFeedback(''); setImportError(''); }} data-testid="input-delivery-file" />
+                      <input id="delivery-file" type="file" accept=".csv,.xlsx,.xls,.ods" onChange={(event) => { setSelectedFile(event.target.files?.[0] ?? null); setInspection(null); setImportFeedback(''); setImportError(''); }} data-testid="input-delivery-file" />
                       <span className="upload-icon"><Upload size={19} /></span>
                       <span className="upload-label">{selectedFile ? selectedFile.name : 'Choose a delivery spreadsheet'}</span>
                       <span className="upload-help">{selectedFile ? `${(selectedFile.size / 1024).toFixed(1)} KB · ready to sync` : 'CSV or Excel · select file to begin'}</span>
                     </label>
-                    <button className="button button-primary full-button" onClick={handleImport} disabled={!selectedFile || importDeliveries.isPending}>
-                      {importDeliveries.isPending ? <><RefreshCw className="spin-icon" size={15} />Processing spreadsheet…</> : <><FileSpreadsheet size={15} />Sync delivery sheet</>}
+                    <button className="button button-outline full-button" onClick={inspectFile} disabled={!selectedFile || inspectDeliveryFile.isPending}>
+                      {inspectDeliveryFile.isPending ? <><RefreshCw className="spin-icon" size={15} />Reading spreadsheet…</> : <><FileSpreadsheet size={15} />Inspect spreadsheet</>}
                     </button>
+                    {inspection && <div className="import-preview">
+                      <div className="preview-heading"><b>Spreadsheet preview</b><span>{inspection.rowCount} rows · {inspection.columns.length} columns</span></div>
+                      <p>Match each AL Media field to the correct source column before importing.</p>
+                      <div className="mapping-grid">
+                        {([
+                          ['phoneNumber', 'Phone number'],
+                          ['studentName', 'Student name'],
+                          ['trackingNumber', 'Tracking number'],
+                          ['address', 'Delivery address'],
+                        ] as const).map(([field, label]) => <label className="field-group" key={field}>
+                          <span className="field-label">{label}</span>
+                          <div className="select-wrap"><select className="input mapping-select" value={columnMap[field]} onChange={(event) => setColumnMap((current) => ({ ...current, [field]: event.target.value }))} aria-label={`Map ${label}`} data-testid={`select-map-${field}`}>
+                            <option value="">Choose column…</option>{inspection.columns.map((column) => <option value={column} key={column}>{column}</option>)}
+                          </select><ChevronDown size={14} /></div>
+                        </label>)}
+                      </div>
+                      {inspection.previewRows.length > 0 && <div className="preview-table-wrap"><table className="delivery-table preview-table"><thead><tr>{inspection.columns.slice(0, 4).map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{inspection.previewRows.slice(0, 3).map((row, index) => <tr key={index}>{inspection.columns.slice(0, 4).map((column) => <td key={column}>{row[column] || '—'}</td>)}</tr>)}</tbody></table></div>}
+                      <button className="button button-primary full-button" onClick={handleImport} disabled={Object.values(columnMap).some((value) => !value) || importDeliveries.isPending}>
+                        {importDeliveries.isPending ? <><RefreshCw className="spin-icon" size={15} />Importing records…</> : <><Upload size={15} />Import mapped records</>}
+                      </button>
+                    </div>}
                     {importFeedback && <div className="feedback success-feedback" role="status"><Check size={15} />{importFeedback}</div>}
                     {importError && <div className="feedback error-feedback" role="alert"><CircleAlert size={15} />{importError}</div>}
                     <div className="table-heading"><span>RECORDS FOR {month}</span><span>{deliveriesQuery.isLoading ? '…' : deliveries.length} records</span></div>

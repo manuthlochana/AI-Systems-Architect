@@ -1,14 +1,11 @@
-import { createHash } from "node:crypto";
-import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { Router, type IRouter } from "express";
 import {
-  AdminSession as AdminSessionResponse,
   ApproveRecordingRequestBody,
   ApproveRecordingRequestParams,
   ApproveRecordingRequestResponse,
   CreateAdminSessionBody,
   CreateAdminSessionResponse,
-  DynamicContentInput as DynamicContentBody,
   GetAdminStatusResponse,
   GetConversationsQueryParams,
   GetConversationsResponse,
@@ -26,11 +23,10 @@ import {
   SetConversationModeParams,
   SetConversationModeResponse,
   UpsertDynamicContentParams,
+  UpsertDynamicContentBody as DynamicContentBody,
   UpsertDynamicContentResponse,
 } from "@workspace/api-zod";
 import {
-  batchEnum,
-  contentCategoryEnum,
   conversationMessagesTable,
   conversationsTable,
   db,
@@ -38,7 +34,6 @@ import {
   recordingRequestsTable,
   tuteDeliveriesTable,
 } from "@workspace/db";
-import { z } from "zod/v4";
 import {
   clearAdminSessionCookie,
   isAdminAuthenticated,
@@ -117,7 +112,7 @@ router.post("/admin/session", (req, res): void => {
     });
     return;
   }
-  if (!validateLoginRateLimit(req.ip)) {
+  if (!validateLoginRateLimit(req.ip ?? "unknown")) {
     res.status(429).json({ error: "Too many sign-in attempts. Try again in 15 minutes." });
     return;
   }
@@ -224,10 +219,12 @@ router.patch(
   async (req, res): Promise<void> => {
     const params = SetConversationModeParams.safeParse(req.params);
     const body = SetConversationModeBody.safeParse(req.body);
-    if (!params.success || !body.success) {
-      res.status(400).json({
-        error: params.success ? body.error.message : params.error.message,
-      });
+    if (!params.success) {
+      res.status(400).json({ error: params.error.message });
+      return;
+    }
+    if (!body.success) {
+      res.status(400).json({ error: body.error.message });
       return;
     }
 
@@ -268,10 +265,6 @@ router.get("/deliveries", requireAdmin, async (req, res): Promise<void> => {
     .orderBy(desc(tuteDeliveriesTable.createdAt))
     .limit(500);
   res.json(GetDeliveriesResponse.parse(rows.map(serializeDelivery)));
-});
-
-const deliveryFileInput = InspectTuteDeliveryFileBody.extend({
-  month: z.string().regex(/^\d{4}-\d{2}$/).optional(),
 });
 
 router.post("/deliveries/inspect", requireAdmin, async (req, res): Promise<void> => {
@@ -409,10 +402,12 @@ router.get("/content", requireAdmin, async (_req, res): Promise<void> => {
 router.put("/content/:key", requireAdmin, async (req, res): Promise<void> => {
   const params = UpsertDynamicContentParams.safeParse(req.params);
   const body = DynamicContentBody.safeParse(req.body);
-  if (!params.success || !body.success) {
-    res.status(400).json({
-      error: params.success ? body.error.message : params.error.message,
-    });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  if (!body.success) {
+    res.status(400).json({ error: body.error.message });
     return;
   }
 
@@ -452,10 +447,12 @@ router.post(
   async (req, res): Promise<void> => {
     const params = ApproveRecordingRequestParams.safeParse(req.params);
     const body = ApproveRecordingRequestBody.safeParse(req.body);
-    if (!params.success || !body.success) {
-      res.status(400).json({
-        error: params.success ? body.error.message : params.error.message,
-      });
+    if (!params.success) {
+      res.status(400).json({ error: params.error.message });
+      return;
+    }
+    if (!body.success) {
+      res.status(400).json({ error: body.error.message });
       return;
     }
     const url = new URL(body.data.zoomLink);
@@ -516,7 +513,7 @@ router.post(
         `recording-request-${request.id}`,
       );
     } catch (error) {
-      req.log.warn({ err: error, requestId: request.id }, "YCloud recording message failed");
+      req.log.warn({ requestId: request.id }, "YCloud recording message failed");
       res.status(502).json({
         error: "YCloud did not accept the message. The request remains pending.",
       });

@@ -11,6 +11,8 @@ export const conversationMessagesTable = pgTable(
     direction: messageDirectionEnum("direction").notNull(),
     body: text("body").notNull(),
     providerMessageId: text("provider_message_id"),
+    externalId: text("external_id"),
+    deliveryStatus: text("delivery_status").notNull().default("received"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -21,6 +23,7 @@ export const conversationMessagesTable = pgTable(
     uniqueIndex("conversation_messages_provider_id_unique").on(
       table.providerMessageId,
     ),
+    uniqueIndex("conversation_messages_external_id_unique").on(table.externalId),
   ],
 );
 
