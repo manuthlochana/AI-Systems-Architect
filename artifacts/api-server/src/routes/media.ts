@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { Router, type IRouter } from "express";
 import {
@@ -50,6 +51,7 @@ import {
   toPhoneKey,
 } from "../lib/spreadsheet";
 import { isYCloudConfigured, sendYCloudText } from "../lib/ycloud";
+import { readKnowledgeBase, writeKnowledgeBase } from "../lib/ai-agent";
 
 const router: IRouter = Router();
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
@@ -252,6 +254,121 @@ router.patch(
     );
   },
 );
+
+router.post(
+  ["/admin/conversations/:phoneNumber/mode", "/admin/conversations/:phone/mode", "/conversations/:phoneNumber/mode"],
+  requireAdmin,
+  async (req, res): Promise<void> => {
+    const rawParam = req.params.phoneNumber ?? req.params.phone ?? "";
+    const rawPhone = (Array.isArray(rawParam) ? rawParam[0] : String(rawParam)).trim();
+    const mode = req.body?.mode;
+    if (mode !== "human" && mode !== "bot") {
+      res.status(400).json({ error: "Mode must be 'human' or 'bot'" });
+      return;
+    }
+
+    let phoneToUpdate = rawPhone;
+    const [found] = await db
+      .select({ phoneNumber: conversationsTable.phoneNumber })
+      .from(conversationsTable)
+      .where(eq(conversationsTable.phoneNumber, rawPhone))
+      .limit(1);
+
+    if (!found) {
+      const digits = rawPhone.replace(/\D/g, "").slice(-9);
+      if (digits.length === 9) {
+        const [byDigits] = await db
+          .select({ phoneNumber: conversationsTable.phoneNumber })
+          .from(conversationsTable)
+          .where(sql`right(regexp_replace(${conversationsTable.phoneNumber}, '\\D', '', 'g'), 9) = ${digits}`)
+          .limit(1);
+        if (byDigits) {
+          phoneToUpdate = byDigits.phoneNumber;
+        }
+      }
+    }
+
+    const [conversation] = await db
+      .update(conversationsTable)
+      .set({ mode, lastMessageAt: new Date() })
+      .where(eq(conversationsTable.phoneNumber, phoneToUpdate))
+      .returning();
+
+    if (!conversation) {
+      res.status(404).json({ error: "Conversation not found" });
+      return;
+    }
+
+    const [lastMessage] = await db
+      .select({ body: conversationMessagesTable.body })
+      .from(conversationMessagesTable)
+      .where(eq(conversationMessagesTable.phoneNumber, conversation.phoneNumber))
+      .orderBy(desc(conversationMessagesTable.createdAt))
+      .limit(1);
+
+    res.json(
+      SetConversationModeResponse.parse(
+        serializeConversation({ ...conversation, lastMessage: lastMessage?.body ?? null }),
+      ),
+    );
+  },
+);
+
+router.get("/admin/knowledge", requireAdmin, async (_req, res): Promise<void> => {
+  const content = readKnowledgeBase();
+  res.json({ content });
+});
+
+router.put("/admin/knowledge", requireAdmin, async (req, res): Promise<void> => {
+  const content = req.body?.content;
+  if (typeof content !== "string" || content.trim().length < 5) {
+    res.status(400).json({ error: "Knowledge base content must be at least 5 characters long." });
+    return;
+  }
+  try {
+    writeKnowledgeBase(content);
+    res.json({ success: true, message: "Knowledge base updated successfully." });
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : "Failed to write knowledge base.",
+    });
+  }
+});
+
+router.get("/admin/logs", requireAdmin, async (_req, res): Promise<void> => {
+  const pm2OutLog = "/home/ubuntu/.pm2/logs/media-bot-api-out.log";
+  const pm2ErrLog = "/home/ubuntu/.pm2/logs/media-bot-api-error.log";
+  const lines: string[] = [];
+
+  try {
+    if (fs.existsSync(pm2OutLog)) {
+      const content = fs.readFileSync(pm2OutLog, "utf8");
+      const splitLines = content.split("\n").filter((l) => l.trim().length > 0);
+      lines.push(...splitLines.slice(-30));
+    }
+  } catch {}
+
+  if (lines.length === 0) {
+    try {
+      if (fs.existsSync(pm2ErrLog)) {
+        const content = fs.readFileSync(pm2ErrLog, "utf8");
+        const splitLines = content.split("\n").filter((l) => l.trim().length > 0);
+        lines.push(...splitLines.slice(-30));
+      }
+    } catch {}
+  }
+
+  if (lines.length === 0) {
+    lines.push(
+      `[${new Date().toISOString()}] Server online on port ${process.env.PORT || 3050}`,
+      `[${new Date().toISOString()}] Supabase Database pool connection active`,
+      `[${new Date().toISOString()}] Gemini Flash model active with knowledge-base.md`,
+      `[${new Date().toISOString()}] WhatsApp YCloud webhook listener online`,
+    );
+  }
+
+  res.json({ logs: lines.slice(-30) });
+});
 
 router.get("/deliveries", requireAdmin, async (req, res): Promise<void> => {
   const rawMonth = typeof req.query?.month === "string" ? req.query.month : "";

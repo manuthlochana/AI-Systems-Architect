@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build as esbuild } from "esbuild";
 import esbuildPluginPino from "esbuild-plugin-pino";
-import { rm } from "node:fs/promises";
+import { copyFile, rm } from "node:fs/promises";
 
 // Plugins (e.g. 'esbuild-plugin-pino') may use `require` to resolve dependencies
 globalThis.require = createRequire(import.meta.url);
@@ -118,6 +118,14 @@ globalThis.__dirname = __bannerPath.dirname(globalThis.__filename);
     `,
     },
   });
+
+  const srcKb = path.resolve(artifactDir, "src/knowledge-base.md");
+  const distKb = path.resolve(distDir, "knowledge-base.md");
+  try {
+    await copyFile(srcKb, distKb);
+  } catch (err) {
+    // If not found yet, ignore
+  }
 }
 
 buildAll().catch((err) => {

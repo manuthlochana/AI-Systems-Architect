@@ -109,9 +109,9 @@ export function deliveryColumnMapFromHeaders(columns: string[]): TuteDeliveryCol
     "";
 
   return {
-    phoneNumber: find(["phonenumber", "phone", "mobile", "contactnumber", "whatsapp", "city1", "city"], 0),
-    studentName: find(["studentname", "name"], 1),
-    trackingNumber: find(["trackingno", "trackingnumber", "tracking", "waybill"], 2),
-    address: find(["address", "postaladdress"], 3),
+    phoneNumber: find(["city1", "phonenumber", "phone", "mobile", "contactnumber", "whatsapp", "city"], 0),
+    studentName: find(["name", "studentname", "student"], 1),
+    trackingNumber: find(["regno", "trackingno", "trackingnumber", "tracking", "waybill"], 2),
+    address: find(["address1", "address", "postaladdress"], 3),
   };
 }

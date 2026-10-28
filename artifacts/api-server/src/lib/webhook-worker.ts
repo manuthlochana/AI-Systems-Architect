@@ -27,7 +27,7 @@ const COLOMBO_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const DAILY_LIMIT_MESSAGE =
   "ඔබ අද දිනට හිමි පණිවිඩ සීමාව ඉක්මවා ඇත. හදිසි අවශ්‍යතාවයක් සඳහා කාර්යාලය අමතන්න: 071 016 1699.";
 const NON_TEXT_WARNING_MESSAGE =
-  "පුතේ, දැනට මට ලිඛිත පණිවිඩ (Text messages) පමණක් කියවිය හැක. කරුණාකර ඔබගේ විමසීම හෝ ගැටලුව Type කර එවන්න.";
+  "පුතේ, දැනට මට ලිඛිත පණිවිඩ (Text) පමණක් කියවිය හැක. කරුණාකර ඔබගේ ගැටලුව Type කර එවන්න.";
 
 type WebhookEvent = typeof webhookEventsTable.$inferSelect;
 
@@ -200,18 +200,7 @@ async function processInbound(event: WebhookEvent): Promise<void> {
     .where(eq(conversationsTable.phoneNumber, phoneNumber))
     .limit(1);
 
-  // 48-hour auto-reset: a stale human handoff returns to the bot.
-  const staleHumanHandoff =
-    existingConversation?.mode === "human" &&
-    Date.now() - new Date(existingConversation.lastMessageAt).getTime() > HUMAN_HANDOFF_MS;
-  if (staleHumanHandoff) {
-    await db
-      .update(conversationsTable)
-      .set({ mode: "bot" })
-      .where(eq(conversationsTable.phoneNumber, phoneNumber));
-    logger.info({ eventId: event.providerEventId }, "Human handoff expired after 48h; reset to bot");
-  }
-  const mode = staleHumanHandoff ? "bot" : existingConversation?.mode ?? "bot";
+  const mode = existingConversation?.mode ?? "bot";
   const messageBody = inbound.body || `[WhatsApp ${inbound.type} message]`;
 
   await db
@@ -226,7 +215,6 @@ async function processInbound(event: WebhookEvent): Promise<void> {
       target: conversationsTable.phoneNumber,
       set: {
         ...(inbound.name ? { studentName: inbound.name } : {}),
-        mode,
         lastMessageAt: sql`greatest(${conversationsTable.lastMessageAt}, ${event.receivedAt})`,
       },
     });
@@ -245,15 +233,34 @@ async function processInbound(event: WebhookEvent): Promise<void> {
 
   if (!savedInbound) return;
 
+  // STRICT HUMAN HANDOFF & BOT SILENCING:
+  // If mode === 'human':
+  // - Message is saved to history (done above) so staff can view it.
+  // - DO NOT schedule debounce.
+  // - DO NOT call Gemini.
+  // - DO NOT send any outbound WhatsApp message via YCloud.
+  // - Clear any existing pending debounce timer.
+  // - Mark the webhook event as processed and exit immediately.
+  if (mode === "human") {
+    const pending = debounceQueue.get(phoneKey);
+    if (pending) {
+      clearTimeout(pending.timer);
+      debounceQueue.delete(phoneKey);
+    }
+    logger.info(
+      { eventId: event.providerEventId, phone: phoneNumber },
+      "Conversation is in human mode; message saved, bot strictly silenced",
+    );
+    return;
+  }
+
   // Media / Audio / Document / Sticker: Discard from AI pipeline to prevent crashes, memory exhaustion and API fees.
   if (inbound.type !== "text") {
-    if (mode !== "human") {
-      await saveOutboundAndSend(
-        `almedia_media_${event.providerEventId}`.slice(0, 120),
-        phoneNumber,
-        NON_TEXT_WARNING_MESSAGE,
-      );
-    }
+    await saveOutboundAndSend(
+      `almedia_media_${event.providerEventId}`.slice(0, 120),
+      phoneNumber,
+      NON_TEXT_WARNING_MESSAGE,
+    );
     logger.info(
       { eventId: event.providerEventId, type: inbound.type, phone: phoneNumber },
       "Non-text inbound WhatsApp message responded with polite text-only warning",
@@ -261,7 +268,7 @@ async function processInbound(event: WebhookEvent): Promise<void> {
     return;
   }
 
-  if (mode === "human" || !inbound.body) return;
+  if (!inbound.body) return;
 
   const age = Date.now() - event.receivedAt.getTime();
   if (age > WHATSAPP_SESSION_MS) {
