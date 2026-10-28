@@ -58,3 +58,7 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Local PM2 Configs
+ecosystem.config.json
+

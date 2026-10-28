@@ -27,12 +27,11 @@ interface AssistantContext {
 }
 
 const KNOWLEDGE_BASE_PATHS = [
-  path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../knowledge-base.md"),
+  path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/knowledge-base.md"),
   path.resolve(path.dirname(fileURLToPath(import.meta.url)), "./knowledge-base.md"),
   path.resolve(process.cwd(), "artifacts/api-server/src/knowledge-base.md"),
   path.resolve(process.cwd(), "artifacts/api-server/dist/knowledge-base.md"),
   path.resolve(process.cwd(), "src/knowledge-base.md"),
-  path.resolve(process.cwd(), "knowledge-base.md"),
 ];
 
 export function getKnowledgeBasePath(): string {
