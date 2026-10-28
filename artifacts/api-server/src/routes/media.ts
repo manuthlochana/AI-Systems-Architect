@@ -254,6 +254,10 @@ router.patch(
 );
 
 router.get("/deliveries", requireAdmin, async (req, res): Promise<void> => {
+  if (req.query && typeof req.query.month === "string") {
+    const match = req.query.month.match(/^(\d{4}-\d{2})/);
+    req.query.month = match ? match[1] : req.query.month.slice(0, 7);
+  }
   const query = GetDeliveriesQueryParams.safeParse(req.query);
   if (!query.success) {
     res.status(400).json({ error: query.error.message });
@@ -291,6 +295,10 @@ router.post("/deliveries/inspect", requireAdmin, async (req, res): Promise<void>
 });
 
 router.post("/deliveries/import", requireAdmin, async (req, res): Promise<void> => {
+  if (req.body && typeof req.body.month === "string") {
+    const match = req.body.month.match(/^(\d{4}-\d{2})/);
+    req.body.month = match ? match[1] : req.body.month.slice(0, 7);
+  }
   const parsed = ImportTuteDeliveriesBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });

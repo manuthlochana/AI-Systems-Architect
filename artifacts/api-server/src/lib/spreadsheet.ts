@@ -57,13 +57,23 @@ export function parseSpreadsheet(fileName: string, fileData: string): ParsedSpre
     ? Object.keys(sourceRows[0])
     : XLSX.utils.sheet_to_json<string[]>(sheet, { header: 1, blankrows: false })[0] ?? [];
   const rows = sourceRows.map((row) =>
-    Object.fromEntries(columns.map((column) => [column, String(row[column] ?? "").trim()])),
+    Object.fromEntries(
+      columns.map((column) => {
+        let val = String(row[column] ?? "").trim();
+        // Strip trailing float zeroes (e.g. 772994218.0 or 772994218.00 from Excel numeric cells)
+        val = val.replace(/\.0+$/, "");
+        return [column, val];
+      }),
+    ),
   );
   return { columns, rows };
 }
 
 export function normalizePhoneNumber(value: string): string {
-  const cleaned = value.trim().replace(/[()\s.-]/g, "");
+  const cleaned = String(value ?? "")
+    .trim()
+    .replace(/\.0+$/, "")
+    .replace(/[()\s.-]/g, "");
   if (/^0\d{9}$/.test(cleaned)) return `+94${cleaned.slice(1)}`;
   if (/^94\d{9}$/.test(cleaned)) return `+${cleaned}`;
   if (/^\+\d{8,15}$/.test(cleaned)) return cleaned;
@@ -76,7 +86,8 @@ export function normalizePhoneNumber(value: string): string {
  * last 9 digits. Used for tute delivery storage/lookups and rate limiting.
  */
 export function toPhoneKey(value: string): string {
-  const digits = String(value ?? "").replace(/\D/g, "");
+  const cleaned = String(value ?? "").trim().replace(/\.0+$/, "");
+  const digits = cleaned.replace(/\D/g, "");
   const match = /(\d{9})$/.exec(digits);
   if (!match) throw new Error("Phone number must contain at least 9 digits");
   return match[1];
@@ -98,7 +109,7 @@ export function deliveryColumnMapFromHeaders(columns: string[]): TuteDeliveryCol
     "";
 
   return {
-    phoneNumber: find(["phonenumber", "phone", "mobile", "contactnumber"], 0),
+    phoneNumber: find(["phonenumber", "phone", "mobile", "contactnumber", "whatsapp", "city1", "city"], 0),
     studentName: find(["studentname", "name"], 1),
     trackingNumber: find(["trackingno", "trackingnumber", "tracking", "waybill"], 2),
     address: find(["address", "postaladdress"], 3),

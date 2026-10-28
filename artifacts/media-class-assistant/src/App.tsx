@@ -37,6 +37,10 @@ function dateLabel(value?: string) {
 function AppContent() {
   const client = useQueryClient();
   const [month, setMonth] = useState(currentMonth);
+  const sanitizedMonth = useMemo(() => {
+    const match = (month || '').match(/^(\d{4}-\d{2})/);
+    return match ? match[1] : currentMonth;
+  }, [month]);
   const [loginKey, setLoginKey] = useState('');
   const [loginError, setLoginError] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -65,7 +69,7 @@ function AppContent() {
   const authenticated = Boolean(status?.authenticated);
   const summaryQuery = useGetDashboardSummary({ query: { enabled: authenticated, queryKey: getGetDashboardSummaryQueryKey() }, request: { credentials: 'include' } });
   const conversationsQuery = useGetConversations({ mode: 'all', limit: 100 }, { query: { enabled: authenticated, queryKey: getGetConversationsQueryKey({ mode: 'all', limit: 100 }) }, request: { credentials: 'include' } });
-  const deliveriesQuery = useGetDeliveries({ month }, { query: { enabled: authenticated, queryKey: getGetDeliveriesQueryKey({ month }) }, request: { credentials: 'include' } });
+  const deliveriesQuery = useGetDeliveries({ month: sanitizedMonth }, { query: { enabled: authenticated, queryKey: getGetDeliveriesQueryKey({ month: sanitizedMonth }) }, request: { credentials: 'include' } });
   const contentQuery = useGetDynamicContent({ query: { enabled: authenticated, queryKey: getGetDynamicContentQueryKey() }, request: { credentials: 'include' } });
   const recordingsQuery = useGetRecordingRequests({ status: 'all', limit: 100 }, { query: { enabled: authenticated, queryKey: getGetRecordingRequestsQueryKey({ status: 'all', limit: 100 }) }, request: { credentials: 'include' } });
   const createSession = useCreateAdminSession({ request: { credentials: 'include' } });
@@ -118,9 +122,9 @@ function AppContent() {
       inspectDeliveryFile.mutate({ data: { fileName: selectedFile.name, fileData } }, {
         onSuccess: (result) => {
           setInspection(result);
-          const findColumn = (terms: string[]) => result.columns.find((column) => terms.some((term) => column.toLowerCase().replace(/[^a-z]/g, '').includes(term)));
+          const findColumn = (terms: string[]) => result.columns.find((column) => terms.some((term) => column.toLowerCase().replace(/[^a-z0-9]/g, '').includes(term)));
           setColumnMap({
-            phoneNumber: findColumn(['phone', 'mobile', 'whatsapp']) ?? '',
+            phoneNumber: findColumn(['phone', 'mobile', 'whatsapp', 'city1', 'city']) ?? '',
             studentName: findColumn(['name', 'student']) ?? '',
             trackingNumber: findColumn(['tracking', 'track', 'waybill']) ?? '',
             address: findColumn(['address', 'delivery']) ?? '',
@@ -139,11 +143,11 @@ function AppContent() {
     setImportError('');
     try {
       const fileData = await fileAsBase64(selectedFile);
-      importDeliveries.mutate({ data: { month, deliveryWave, itemType, fileName: selectedFile.name, fileData, columnMap } }, {
+      importDeliveries.mutate({ data: { month: sanitizedMonth, deliveryWave, itemType, fileName: selectedFile.name, fileData, columnMap } }, {
         onSuccess: (result) => {
           setImportFeedback(`Processed ${result.processed} rows · ${result.inserted} added · ${result.updated} updated · ${result.skipped} skipped.`);
           setImportError(result.errors?.length ? result.errors.join(' · ') : '');
-          void client.invalidateQueries({ queryKey: getGetDeliveriesQueryKey({ month }) });
+          void client.invalidateQueries({ queryKey: getGetDeliveriesQueryKey({ month: sanitizedMonth }) });
           void client.invalidateQueries({ queryKey: getGetDashboardSummaryQueryKey() });
         },
         onError: (error) => setImportError(errorText(error)),
@@ -342,7 +346,7 @@ function AppContent() {
                     <SectionHeading number="02" title="Monthly tute delivery" icon={<FileSpreadsheet size={17} />} description="Spreadsheet sync and records" />
                     <div className="delivery-controls">
                       <label className="field-label" htmlFor="delivery-month">Delivery month</label>
-                      <input id="delivery-month" className="input month-input" type="month" value={month} onChange={(event) => setMonth(event.target.value)} data-testid="input-delivery-month" />
+                      <input id="delivery-month" className="input month-input" type="month" value={sanitizedMonth} maxLength={7} onChange={(event) => { const val = event.target.value.slice(0, 7); setMonth(val || currentMonth); }} data-testid="input-delivery-month" />
                        <label className="field-label" htmlFor="delivery-wave">Delivery wave</label>
                        <div className="select-wrap"><select id="delivery-wave" className="input" value={deliveryWave} onChange={(event) => setDeliveryWave(event.target.value as (typeof DELIVERY_WAVES)[number])} data-testid="select-delivery-wave">{DELIVERY_WAVES.map((wave) => <option key={wave} value={wave}>{wave}</option>)}</select><ChevronDown size={14} /></div>
                        <label className="field-label" htmlFor="delivery-item">Item type</label>
@@ -380,7 +384,7 @@ function AppContent() {
                     </div>}
                     {importFeedback && <div className="feedback success-feedback" role="status"><Check size={15} />{importFeedback}</div>}
                     {importError && <div className="feedback error-feedback" role="alert"><CircleAlert size={15} />{importError}</div>}
-                    <div className="table-heading"><span>RECORDS FOR {month}</span><span>{deliveriesQuery.isLoading ? '…' : deliveries.length} records</span></div>
+                    <div className="table-heading"><span>RECORDS FOR {sanitizedMonth}</span><span>{deliveriesQuery.isLoading ? '…' : deliveries.length} records</span></div>
                     {deliveriesQuery.isLoading ? <LoadingRows compact /> : deliveriesQuery.isError ? <ErrorState message={errorText(deliveriesQuery.error)} retry={() => void deliveriesQuery.refetch()} /> : deliveries.length === 0 ? <p className="small-empty">No delivery records for this month yet.</p> : (
                       <div className="delivery-table-wrap"><table className="delivery-table"><thead><tr><th>Student</th><th>Item</th><th>Tracking</th><th>Status</th></tr></thead><tbody>
                         {deliveries.slice(0, 7).map((delivery) => <tr key={delivery.id}><td><b>{delivery.studentName || 'Student'}</b><small>{delivery.phoneNumber}</small></td><td><span className="status-badge">{delivery.itemType}</span><small>{delivery.deliveryWave}</small></td><td className="font-mono-ui">{delivery.trackingNumber}</td><td><span className={`status-badge ${delivery.status.toLowerCase()}`}>{delivery.status}</span></td></tr>)}
