@@ -32,6 +32,7 @@ module.exports = {
       cwd: "/home/ubuntu/suranga-media-bot",
       env: {
         ...envFileVars,
+        NODE_TLS_REJECT_UNAUTHORIZED: "0",
         NODE_ENV: "production",
         PORT: 3050
       }

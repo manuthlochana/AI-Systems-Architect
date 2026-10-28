@@ -405,6 +405,42 @@ async function executeTool(
   }
 }
 
+const CANDIDATE_MODELS = [
+  process.env.GEMINI_MODEL,
+  "gemini-flash-latest",
+  "gemini-3.8-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-pro-latest",
+].filter((m): m is string => Boolean(m));
+
+async function generateContentWithFallback(
+  client: GoogleGenAI,
+  req: {
+    contents: Content[];
+    config: {
+      systemInstruction: string;
+      tools: [{ functionDeclarations: FunctionDeclaration[] }];
+    };
+  },
+) {
+  let lastError: unknown;
+  for (const model of CANDIDATE_MODELS) {
+    try {
+      return await client.models.generateContent({
+        ...req,
+        model,
+      });
+    } catch (err) {
+      lastError = err;
+      logger.warn(
+        { model, err: err instanceof Error ? err.message : String(err) },
+        "Gemini model attempt failed; trying fallback candidate",
+      );
+    }
+  }
+  throw lastError;
+}
+
 export async function generateStudentReply(
   context: AssistantContext,
 ): Promise<{ text: string; lastIntent: string }> {
@@ -434,8 +470,7 @@ export async function generateStudentReply(
   while (contents.length && contents[0].role !== "user") contents.shift();
 
   const client = new GoogleGenAI({ apiKey });
-  let response = await client.models.generateContent({
-    model: "gemini-1.5-flash",
+  let response = await generateContentWithFallback(client, {
     contents,
     config: {
       systemInstruction: SYSTEM_INSTRUCTION,
@@ -486,8 +521,7 @@ export async function generateStudentReply(
     }
     if (!functionResponses.length) break;
     contents.push({ role: "user", parts: functionResponses });
-    response = await client.models.generateContent({
-      model: "gemini-1.5-flash",
+    response = await generateContentWithFallback(client, {
       contents,
       config: {
         systemInstruction: SYSTEM_INSTRUCTION,

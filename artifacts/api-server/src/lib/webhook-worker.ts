@@ -153,11 +153,18 @@ async function flushDebounced(key: string): Promise<void> {
   } catch (error) {
     // A newer burst may already be queued for this number; it will cover these messages.
     if (debounceQueue.has(key)) return;
+    const errDetail = error instanceof Error ? error.message : String(error);
     if (entry.retries < DEBOUNCE_MAX_RETRIES) {
-      logger.warn({ retry: entry.retries + 1 }, "Debounced reply failed; retrying");
+      logger.warn(
+        { retry: entry.retries + 1, error: errDetail, phone: entry.phoneNumber },
+        "Debounced reply failed; retrying",
+      );
       scheduleDebouncedReply(key, entry, DEBOUNCE_RETRY_DELAY_MS, entry.retries + 1);
     } else {
-      logger.error({ err: error instanceof Error ? error.message : "unknown" }, "Debounced reply failed permanently");
+      logger.error(
+        { err: errDetail, phone: entry.phoneNumber },
+        "Debounced reply failed permanently",
+      );
     }
   }
 }
