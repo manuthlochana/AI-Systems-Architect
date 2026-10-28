@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, lt, or, sql } from "drizzle-orm";
 import {
   conversationMessagesTable,
   conversationsTable,
@@ -7,48 +7,40 @@ import {
 } from "@workspace/db";
 import { generateStudentReply } from "./ai-agent";
 import { logger } from "./logger";
-import { normalizePhoneNumber } from "./spreadsheet";
+import { normalizePhoneNumber, toPhoneKey } from "./spreadsheet";
+import { isGroupChatEvent, parseInboundMessage } from "./whatsapp-event";
 import { isYCloudConfigured, sendYCloudText } from "./ycloud";
 
 const MAX_ATTEMPTS = 5;
 const RETRY_DELAY_MS = 15_000;
 const PROCESSING_LEASE_MS = 3 * 60_000;
 const WHATSAPP_SESSION_MS = 24 * 60 * 60_000;
-const HUMAN_HANDOFF_MS = 48 * 60 * 60_000;
+const HUMAN_HANDOFF_MS = 48 * 60 * 60 * 1000;
+
+/** Rapid-fire messages inside this window are merged into one Gemini prompt. */
+const DEBOUNCE_WINDOW_MS = 7_000;
+const DEBOUNCE_MAX_RETRIES = 2;
+const DEBOUNCE_RETRY_DELAY_MS = 15_000;
+
+const DAILY_MESSAGE_LIMIT = 25;
+const COLOMBO_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+const DAILY_LIMIT_MESSAGE =
+  "ඔබ අද දිනට හිමි පණිවිඩ සීමාව ඉක්මවා ඇත. හදිසි අවශ්‍යතාවයක් සඳහා කාර්යාලය අමතන්න: 071 016 1699.";
 
 type WebhookEvent = typeof webhookEventsTable.$inferSelect;
-type JsonObject = Record<string, unknown>;
 
-function asObject(value: unknown): JsonObject | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as JsonObject)
-    : undefined;
-}
-
-function getInboundMessage(payload: JsonObject) {
-  const message = asObject(payload.whatsappInboundMessage);
-  if (!message) return undefined;
-  const text = asObject(message.text);
-  const profile = asObject(message.customerProfile);
-  const phoneValue = typeof message.from === "string" ? message.from : "";
-  const providerMessageId =
-    typeof message.wamid === "string"
-      ? message.wamid
-      : typeof message.id === "string"
-        ? message.id
-        : "";
-  const body = typeof text?.body === "string" ? text.body.trim() : "";
-  const name = typeof profile?.name === "string" ? profile.name.slice(0, 120) : null;
-  const type = typeof message.type === "string" ? message.type : "unknown";
-  return { phoneValue, providerMessageId, body, name, type };
+/** Start of the calendar day (Asia/Colombo) containing `at`. */
+function startOfColomboDay(at: Date): Date {
+  const local = at.getTime() + COLOMBO_OFFSET_MS;
+  const dayStartLocal = Math.floor(local / 86_400_000) * 86_400_000;
+  return new Date(dayStartLocal - COLOMBO_OFFSET_MS);
 }
 
 async function saveOutboundAndSend(
-  event: WebhookEvent,
+  externalId: string,
   phoneNumber: string,
   body: string,
 ): Promise<void> {
-  const externalId = `almedia_${event.providerEventId}`.slice(0, 120);
   let [outbound] = await db
     .select()
     .from(conversationMessagesTable)
@@ -101,14 +93,92 @@ async function saveOutboundAndSend(
   }
 }
 
+interface PendingDebounce {
+  timer: NodeJS.Timeout;
+  phoneNumber: string;
+  studentName: string | null;
+  providerMessageId: string;
+  /** DB id of the newest inbound message in this burst (for idempotent reply ids). */
+  lastMessageDbId: number;
+  retries: number;
+}
+
+/** In-memory debounce queue keyed by the 9-digit phone key. */
+const debounceQueue = new Map<string, PendingDebounce>();
+
+function scheduleDebouncedReply(
+  key: string,
+  entry: Omit<PendingDebounce, "timer" | "retries">,
+  delayMs = DEBOUNCE_WINDOW_MS,
+  retries = 0,
+): void {
+  const existing = debounceQueue.get(key);
+  if (existing) clearTimeout(existing.timer);
+  const timer = setTimeout(() => void flushDebounced(key), delayMs);
+  debounceQueue.set(key, { ...entry, timer, retries });
+}
+
+async function flushDebounced(key: string): Promise<void> {
+  const entry = debounceQueue.get(key);
+  if (!entry) return;
+  debounceQueue.delete(key);
+
+  try {
+    const [conversation] = await db
+      .select()
+      .from(conversationsTable)
+      .where(eq(conversationsTable.phoneNumber, entry.phoneNumber))
+      .limit(1);
+    // Staff may have taken over while the debounce window was open.
+    if (conversation?.mode === "human") return;
+
+    // All inbound texts in the burst are in the DB; generateStudentReply merges
+    // consecutive student messages into a single consolidated prompt.
+    const reply = await generateStudentReply({
+      phoneNumber: entry.phoneNumber,
+      studentName: conversation?.studentName ?? entry.studentName,
+      batch: conversation?.batch ?? "unknown",
+      providerMessageId: entry.providerMessageId,
+    });
+    await db
+      .update(conversationsTable)
+      .set({ lastIntent: reply.lastIntent })
+      .where(eq(conversationsTable.phoneNumber, entry.phoneNumber));
+
+    await saveOutboundAndSend(
+      `almedia_d${key}_${entry.lastMessageDbId}`.slice(0, 120),
+      entry.phoneNumber,
+      reply.text,
+    );
+  } catch (error) {
+    // A newer burst may already be queued for this number; it will cover these messages.
+    if (debounceQueue.has(key)) return;
+    if (entry.retries < DEBOUNCE_MAX_RETRIES) {
+      logger.warn({ retry: entry.retries + 1 }, "Debounced reply failed; retrying");
+      scheduleDebouncedReply(key, entry, DEBOUNCE_RETRY_DELAY_MS, entry.retries + 1);
+    } else {
+      logger.error({ err: error instanceof Error ? error.message : "unknown" }, "Debounced reply failed permanently");
+    }
+  }
+}
+
 async function processInbound(event: WebhookEvent): Promise<void> {
   if (event.eventType !== "whatsapp.inbound_message.received") return;
-  const inbound = getInboundMessage(event.payload);
+
+  // Strictly 1-on-1 chats: discard anything that originates from a WhatsApp group.
+  if (isGroupChatEvent(event.payload)) {
+    logger.info({ eventId: event.providerEventId }, "Discarded WhatsApp group event");
+    return;
+  }
+
+  const inbound = parseInboundMessage(event.payload);
   if (!inbound?.providerMessageId || !inbound.phoneValue) return;
 
   let phoneNumber: string;
+  let phoneKey: string;
   try {
     phoneNumber = normalizePhoneNumber(inbound.phoneValue);
+    phoneKey = toPhoneKey(phoneNumber);
   } catch {
     logger.warn({ eventId: event.providerEventId }, "Ignored invalid WhatsApp sender number");
     return;
@@ -119,9 +189,18 @@ async function processInbound(event: WebhookEvent): Promise<void> {
     .from(conversationsTable)
     .where(eq(conversationsTable.phoneNumber, phoneNumber))
     .limit(1);
+
+  // 48-hour auto-reset: a stale human handoff returns to the bot.
   const staleHumanHandoff =
     existingConversation?.mode === "human" &&
-    event.receivedAt.getTime() - existingConversation.lastMessageAt.getTime() >= HUMAN_HANDOFF_MS;
+    Date.now() - new Date(existingConversation.lastMessageAt).getTime() > HUMAN_HANDOFF_MS;
+  if (staleHumanHandoff) {
+    await db
+      .update(conversationsTable)
+      .set({ mode: "bot" })
+      .where(eq(conversationsTable.phoneNumber, phoneNumber));
+    logger.info({ eventId: event.providerEventId }, "Human handoff expired after 48h; reset to bot");
+  }
   const mode = staleHumanHandoff ? "bot" : existingConversation?.mode ?? "bot";
   const messageBody = inbound.body || `[WhatsApp ${inbound.type} message]`;
 
@@ -163,36 +242,41 @@ async function processInbound(event: WebhookEvent): Promise<void> {
     return;
   }
 
-  const externalId = `almedia_${event.providerEventId}`.slice(0, 120);
-  const existingOutbound = await db
-    .select()
+  // Daily cap (calendar day, Asia/Colombo) per phone number, counted across number formats.
+  const [{ count: todayCount }] = await db
+    .select({ count: sql<number>`count(*)::int` })
     .from(conversationMessagesTable)
-    .where(eq(conversationMessagesTable.externalId, externalId))
-    .limit(1);
-
-  if (existingOutbound[0]) {
-    await saveOutboundAndSend(event, phoneNumber, existingOutbound[0].body);
+    .where(
+      and(
+        sql`right(regexp_replace(${conversationMessagesTable.phoneNumber}, '\\D', '', 'g'), 9) = ${phoneKey}`,
+        eq(conversationMessagesTable.direction, "inbound"),
+        gte(conversationMessagesTable.createdAt, startOfColomboDay(event.receivedAt)),
+      ),
+    );
+  if (todayCount > DAILY_MESSAGE_LIMIT) {
+    // Bypass the LLM entirely. Notify once (on the first excess message) to avoid spamming.
+    const pending = debounceQueue.get(phoneKey);
+    if (pending) {
+      clearTimeout(pending.timer);
+      debounceQueue.delete(phoneKey);
+    }
+    if (todayCount === DAILY_MESSAGE_LIMIT + 1) {
+      await saveOutboundAndSend(
+        `almedia_${event.providerEventId}`.slice(0, 120),
+        phoneNumber,
+        DAILY_LIMIT_MESSAGE,
+      );
+    }
     return;
   }
 
-  const [conversation] = await db
-    .select()
-    .from(conversationsTable)
-    .where(eq(conversationsTable.phoneNumber, phoneNumber))
-    .limit(1);
-  const batch = conversation?.batch ?? "unknown";
-  const reply = await generateStudentReply({
+  // Debounce: (re)start the window; the reply covers every message that arrives within it.
+  scheduleDebouncedReply(phoneKey, {
     phoneNumber,
-    studentName: conversation?.studentName ?? inbound.name,
-    batch,
+    studentName: inbound.name,
     providerMessageId: inbound.providerMessageId,
+    lastMessageDbId: savedInbound.id,
   });
-  await db
-    .update(conversationsTable)
-    .set({ lastIntent: reply.lastIntent })
-    .where(eq(conversationsTable.phoneNumber, phoneNumber));
-
-  await saveOutboundAndSend(event, phoneNumber, reply.text);
 }
 
 async function claimNextEvent(): Promise<WebhookEvent | undefined> {

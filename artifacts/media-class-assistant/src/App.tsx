@@ -3,12 +3,12 @@ import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/reac
 import {
   Activity, ArrowDownRight, ArrowUpRight, BookOpen, CalendarDays, Check, ChevronDown,
   CircleAlert, FileSpreadsheet, Headphones, KeyRound, LogOut, MessageCircle,
-  RefreshCw, Send, Settings2, ShieldCheck, Upload, Users, Video, X,
+  RefreshCw, Send, Settings2, ShieldCheck, Trash2, Upload, Users, Video, X,
 } from 'lucide-react';
 import {
   getGetAdminStatusQueryKey, getGetConversationsQueryKey, getGetDashboardSummaryQueryKey,
   getGetDeliveriesQueryKey, getGetDynamicContentQueryKey, getGetRecordingRequestsQueryKey,
-  useApproveRecordingRequest, useCreateAdminSession, useDeleteAdminSession,
+  useApproveRecordingRequest, useCreateAdminSession, useDeleteAdminSession, useDeleteDynamicContent,
   useGetAdminStatus, useGetConversations, useGetDashboardSummary, useGetDeliveries,
   useGetDynamicContent, useGetRecordingRequests, useHealthCheck, useImportTuteDeliveries,
   useInspectTuteDeliveryFile, useSetConversationMode, useUpsertDynamicContent,
@@ -17,6 +17,9 @@ import {
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: true, staleTime: 20_000 } },
 });
+const DELIVERY_WAVES = ['Wave 1', 'Wave 2', 'Wave 3', 'Wave 4'] as const;
+const ITEM_TYPES = ['Monthly Tute', 'Special Book'] as const;
+type ContentCategory = 'timetable' | 'pricing' | 'general' | 'faq' | 'announcement';
 const now = new Date();
 const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
@@ -39,6 +42,8 @@ function AppContent() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [inspection, setInspection] = useState<{ columns: string[]; previewRows: Array<Record<string, string>>; rowCount: number } | null>(null);
   const [columnMap, setColumnMap] = useState({ phoneNumber: '', studentName: '', trackingNumber: '', address: '' });
+  const [deliveryWave, setDeliveryWave] = useState<(typeof DELIVERY_WAVES)[number]>('Wave 1');
+  const [itemType, setItemType] = useState<(typeof ITEM_TYPES)[number]>('Monthly Tute');
   const [importFeedback, setImportFeedback] = useState('');
   const [importError, setImportError] = useState('');
   const [activeContentKey, setActiveContentKey] = useState('');
@@ -48,9 +53,10 @@ function AppContent() {
   const [contentBody, setContentBody] = useState('');
   const [contentFeedback, setContentFeedback] = useState('');
   const [contentError, setContentError] = useState('');
-  const [approvalTarget, setApprovalTarget] = useState<number | null>(null);
-  const [zoomLink, setZoomLink] = useState('');
-  const [approvalError, setApprovalError] = useState('');
+  const [zoomInputs, setZoomInputs] = useState<Record<number, string>>({});
+  const [approvingId, setApprovingId] = useState<number | null>(null);
+  const [approvalError, setApprovalError] = useState<{ id: number; message: string } | null>(null);
+  const [contextTarget, setContextTarget] = useState<number | null>(null);
   const [notice, setNotice] = useState('');
 
   const statusQuery = useGetAdminStatus({ request: { credentials: 'include' } });
@@ -68,6 +74,7 @@ function AppContent() {
   const importDeliveries = useImportTuteDeliveries({ request: { credentials: 'include' } });
   const inspectDeliveryFile = useInspectTuteDeliveryFile({ request: { credentials: 'include' } });
   const upsertContent = useUpsertDynamicContent({ request: { credentials: 'include' } });
+  const deleteContent = useDeleteDynamicContent({ request: { credentials: 'include' } });
   const approveRecording = useApproveRecordingRequest({ request: { credentials: 'include' } });
 
   const conversations = conversationsQuery.data ?? [];
@@ -75,6 +82,7 @@ function AppContent() {
   const dynamicContent = contentQuery.data ?? [];
   const recordingRequests = recordingsQuery.data ?? [];
   const selectedContent = useMemo(() => dynamicContent.find((item) => item.key === activeContentKey), [dynamicContent, activeContentKey]);
+  const contextRequest = recordingRequests.find((item) => item.id === contextTarget);
   const queue = conversations.filter((item) => item.mode === 'human');
 
   function loadContent(key: string) {
@@ -131,7 +139,7 @@ function AppContent() {
     setImportError('');
     try {
       const fileData = await fileAsBase64(selectedFile);
-      importDeliveries.mutate({ data: { month, fileName: selectedFile.name, fileData, columnMap } }, {
+      importDeliveries.mutate({ data: { month, deliveryWave, itemType, fileName: selectedFile.name, fileData, columnMap } }, {
         onSuccess: (result) => {
           setImportFeedback(`Processed ${result.processed} rows · ${result.inserted} added · ${result.updated} updated · ${result.skipped} skipped.`);
           setImportError(result.errors?.length ? result.errors.join(' · ') : '');
@@ -154,7 +162,7 @@ function AppContent() {
       setContentError('Add a unique key and a title before saving.');
       return;
     }
-    upsertContent.mutate({ key, data: { category: contentCategory as 'timetable' | 'pricing' | 'general', title: contentTitle.trim(), content: contentBody } }, {
+    upsertContent.mutate({ key, data: { category: contentCategory as ContentCategory, title: contentTitle.trim(), content: contentBody } }, {
       onSuccess: (saved) => {
         setContentFeedback('Changes saved.');
         setActiveContentKey(saved.key);
@@ -166,18 +174,36 @@ function AppContent() {
     });
   }
 
-  function confirmApproval() {
-    if (approvalTarget === null || !zoomLink.trim()) return;
-    setApprovalError('');
-    approveRecording.mutate({ id: approvalTarget, data: { zoomLink: zoomLink.trim() } }, {
+  function removeContent() {
+    if (!activeContentKey) return;
+    if (!window.confirm(`Delete "${selectedContent?.title ?? activeContentKey}"? The assistant will stop using it.`)) return;
+    setContentError('');
+    setContentFeedback('');
+    deleteContent.mutate({ key: activeContentKey }, {
       onSuccess: () => {
-        setApprovalTarget(null);
-        setZoomLink('');
-        setNotice('Recording link approved and sent.');
+        loadContent('');
+        setNotice('Entry deleted.');
+        void client.invalidateQueries({ queryKey: getGetDynamicContentQueryKey() });
+        void client.invalidateQueries({ queryKey: getGetDashboardSummaryQueryKey() });
+      },
+      onError: (error) => setContentError(errorText(error)),
+    });
+  }
+
+  function confirmApproval(id: number) {
+    const zoomLink = (zoomInputs[id] ?? '').trim();
+    if (!zoomLink) return;
+    setApprovalError(null);
+    setApprovingId(id);
+    approveRecording.mutate({ id, data: { zoomLink } }, {
+      onSettled: () => setApprovingId(null),
+      onSuccess: () => {
+        setZoomInputs((current) => { const next = { ...current }; delete next[id]; return next; });
+        setNotice('Recording link approved and sent via WhatsApp.');
         void client.invalidateQueries({ queryKey: getGetRecordingRequestsQueryKey({ status: 'all', limit: 100 }) });
         void client.invalidateQueries({ queryKey: getGetDashboardSummaryQueryKey() });
       },
-      onError: (error) => setApprovalError(errorText(error)),
+      onError: (error) => setApprovalError({ id, message: errorText(error) }),
     });
   }
 
@@ -317,12 +343,16 @@ function AppContent() {
                     <div className="delivery-controls">
                       <label className="field-label" htmlFor="delivery-month">Delivery month</label>
                       <input id="delivery-month" className="input month-input" type="month" value={month} onChange={(event) => setMonth(event.target.value)} data-testid="input-delivery-month" />
+                       <label className="field-label" htmlFor="delivery-wave">Delivery wave</label>
+                       <div className="select-wrap"><select id="delivery-wave" className="input" value={deliveryWave} onChange={(event) => setDeliveryWave(event.target.value as (typeof DELIVERY_WAVES)[number])} data-testid="select-delivery-wave">{DELIVERY_WAVES.map((wave) => <option key={wave} value={wave}>{wave}</option>)}</select><ChevronDown size={14} /></div>
+                       <label className="field-label" htmlFor="delivery-item">Item type</label>
+                       <div className="select-wrap"><select id="delivery-item" className="input" value={itemType} onChange={(event) => setItemType(event.target.value as (typeof ITEM_TYPES)[number])} data-testid="select-item-type">{ITEM_TYPES.map((item) => <option key={item} value={item}>{item}</option>)}</select><ChevronDown size={14} /></div>
                     </div>
                     <label className={`upload-zone ${selectedFile ? 'has-file' : ''}`} htmlFor="delivery-file">
                       <input id="delivery-file" type="file" accept=".csv,.xlsx,.xls,.ods" onChange={(event) => { setSelectedFile(event.target.files?.[0] ?? null); setInspection(null); setImportFeedback(''); setImportError(''); }} data-testid="input-delivery-file" />
                       <span className="upload-icon"><Upload size={19} /></span>
                       <span className="upload-label">{selectedFile ? selectedFile.name : 'Choose a delivery spreadsheet'}</span>
-                      <span className="upload-help">{selectedFile ? `${(selectedFile.size / 1024).toFixed(1)} KB · ready to sync` : 'CSV or Excel · select file to begin'}</span>
+                      <span className="upload-help">{selectedFile ? `${(selectedFile.size / 1024).toFixed(1)} KB · ${deliveryWave} · ${itemType}` : 'CSV or Excel · select file to begin'}</span>
                     </label>
                     <button className="button button-outline full-button" onClick={inspectFile} disabled={!selectedFile || inspectDeliveryFile.isPending}>
                       {inspectDeliveryFile.isPending ? <><RefreshCw className="spin-icon" size={15} />Reading spreadsheet…</> : <><FileSpreadsheet size={15} />Inspect spreadsheet</>}
@@ -352,8 +382,8 @@ function AppContent() {
                     {importError && <div className="feedback error-feedback" role="alert"><CircleAlert size={15} />{importError}</div>}
                     <div className="table-heading"><span>RECORDS FOR {month}</span><span>{deliveriesQuery.isLoading ? '…' : deliveries.length} records</span></div>
                     {deliveriesQuery.isLoading ? <LoadingRows compact /> : deliveriesQuery.isError ? <ErrorState message={errorText(deliveriesQuery.error)} retry={() => void deliveriesQuery.refetch()} /> : deliveries.length === 0 ? <p className="small-empty">No delivery records for this month yet.</p> : (
-                      <div className="delivery-table-wrap"><table className="delivery-table"><thead><tr><th>Student</th><th>Tracking</th><th>Status</th></tr></thead><tbody>
-                        {deliveries.slice(0, 7).map((delivery) => <tr key={delivery.id}><td><b>{delivery.studentName || 'Student'}</b><small>{delivery.phoneNumber}</small></td><td className="font-mono-ui">{delivery.trackingNumber}</td><td><span className={`status-badge ${delivery.status.toLowerCase()}`}>{delivery.status}</span></td></tr>)}
+                      <div className="delivery-table-wrap"><table className="delivery-table"><thead><tr><th>Student</th><th>Item</th><th>Tracking</th><th>Status</th></tr></thead><tbody>
+                        {deliveries.slice(0, 7).map((delivery) => <tr key={delivery.id}><td><b>{delivery.studentName || 'Student'}</b><small>{delivery.phoneNumber}</small></td><td><span className="status-badge">{delivery.itemType}</span><small>{delivery.deliveryWave}</small></td><td className="font-mono-ui">{delivery.trackingNumber}</td><td><span className={`status-badge ${delivery.status.toLowerCase()}`}>{delivery.status}</span></td></tr>)}
                       </tbody></table>{deliveries.length > 7 && <div className="table-foot">Showing 7 of {deliveries.length} delivery records</div>}</div>
                     )}
                   </section>
@@ -369,14 +399,14 @@ function AppContent() {
                         <form className="content-form" onSubmit={saveContent}>
                           <div className="content-form-row">
                             <div className="field-group"><label className="field-label" htmlFor="content-key">Entry key</label><input id="content-key" className="input" value={contentKey} onChange={(event) => setContentKey(event.target.value)} placeholder="e.g. 2027-theory-timetable" required maxLength={120} data-testid="input-content-key" /></div>
-                            <div className="field-group"><label className="field-label" htmlFor="content-category">Category</label><div className="select-wrap"><select id="content-category" className="input" value={contentCategory} onChange={(event) => setContentCategory(event.target.value)} data-testid="select-content-category"><option value="timetable">Timetable</option><option value="pricing">Fees</option><option value="general">Announcement</option></select><ChevronDown size={15} /></div></div>
+                            <div className="field-group"><label className="field-label" htmlFor="content-category">Category</label><div className="select-wrap"><select id="content-category" className="input" value={contentCategory} onChange={(event) => setContentCategory(event.target.value)} data-testid="select-content-category"><option value="timetable">Timetable</option><option value="pricing">Fees</option><option value="faq">FAQ</option><option value="announcement">Announcement</option><option value="general">General</option></select><ChevronDown size={15} /></div></div>
                           </div>
                           <div className="field-group"><label className="field-label" htmlFor="content-title">Title</label><input id="content-title" className="input" value={contentTitle} onChange={(event) => setContentTitle(event.target.value)} placeholder="Short title students will recognize" required maxLength={200} data-testid="input-content-title" /></div>
                           <div className="field-group"><label className="field-label" htmlFor="content-body">Information</label><textarea id="content-body" className="input content-textarea" value={contentBody} onChange={(event) => setContentBody(event.target.value)} placeholder="Write class times, fee details or an announcement…" maxLength={50000} rows={5} data-testid="input-content-body" /></div>
                           {selectedContent && <div className="updated-at">Last updated {dateLabel(selectedContent.updatedAt)}</div>}
                           {contentFeedback && <div className="feedback success-feedback" role="status"><Check size={15} />{contentFeedback}</div>}
                           {contentError && <div className="feedback error-feedback" role="alert"><CircleAlert size={15} />{contentError}</div>}
-                          <div className="form-footer"><span>Content is used in student responses.</span><button type="submit" className="button button-primary" disabled={upsertContent.isPending}>{upsertContent.isPending ? 'Saving…' : 'Save information'}<ArrowDownRight size={15} /></button></div>
+                          <div className="form-footer"><span>Content is used in student responses.</span>{activeContentKey && <button type="button" className="button button-outline" onClick={removeContent} disabled={deleteContent.isPending} data-testid="button-delete-content"><Trash2 size={15} />{deleteContent.isPending ? 'Deleting…' : 'Delete'}</button>}<button type="submit" className="button button-primary" disabled={upsertContent.isPending}>{upsertContent.isPending ? 'Saving…' : 'Save information'}<ArrowDownRight size={15} /></button></div>
                         </form>
                       </>
                     )}
@@ -388,8 +418,24 @@ function AppContent() {
                       <div className="recording-list">
                         {recordingRequests.map((request) => <article className="recording-item" key={request.id} data-testid={`recording-${request.id}`}>
                           <div className="recording-icon"><Video size={17} /></div>
-                          <div className="recording-main"><div className="name-line"><strong>{request.studentName || 'Student'}</strong><span className={`status-badge ${request.status}`}>{request.status}</span></div><div className="conversation-context"><span>{request.batch ? `Batch ${request.batch}` : 'Batch unassigned'}</span><span className="separator-dot" />{request.classType || 'Class recording'}<span className="separator-dot" />Requested {dateLabel(request.requestedDate)}</div><span className="mono-number">{request.phoneNumber}</span></div>
-                          <div className="recording-action">{request.status === 'pending' ? <button className="button button-small button-outline" onClick={() => { setApprovalTarget(request.id); setZoomLink(''); setApprovalError(''); }}>Review & send link</button> : request.zoomLink ? <a href={request.zoomLink} target="_blank" rel="noreferrer" className="button button-small button-outline">Open recording</a> : <span className="muted-label">No link attached</span>}</div>
+                          <div className="recording-main">
+                            <div className="name-line"><strong>{request.studentName || 'Student'}</strong><span className={`status-badge ${request.status}`}>{request.status}</span></div>
+                            <div className="conversation-context">
+                              <span className="status-badge" title="Class">{request.className && request.className !== 'Unknown' ? request.className : (request.classType || 'Class unknown')}</span>
+                              <span className="status-badge" title="Requested class date">{request.requestedDate}</span>
+                              <span className={`status-badge ${request.studentType.toLowerCase()}`} title="Student type">{request.studentType}</span>
+                            </div>
+                            {request.reason && <p className="message-preview" title="Reason">Reason: {request.reason}</p>}
+                            <span className="mono-number">{request.phoneNumber}</span>
+                            <div><button className="button button-small button-quiet" onClick={() => setContextTarget(request.id)} data-testid={`button-context-${request.id}`}><MessageCircle size={14} />View Chat Context</button></div>
+                          </div>
+                          <div className="recording-action">
+                            {request.status === 'pending' ? <>
+                              <input className="input" type="url" placeholder="https://zoom.us/rec/…" value={zoomInputs[request.id] ?? ''} onChange={(event) => setZoomInputs((current) => ({ ...current, [request.id]: event.target.value }))} maxLength={2048} aria-label="Zoom recording URL" data-testid={`input-zoom-${request.id}`} />
+                              <button className="button button-small button-primary" onClick={() => confirmApproval(request.id)} disabled={approvingId !== null || !(zoomInputs[request.id] ?? '').trim()} data-testid={`button-approve-${request.id}`}>{approvingId === request.id ? 'Sending…' : 'Approve & Send via WhatsApp'}<Send size={14} /></button>
+                              {approvalError?.id === request.id && <div className="inline-error" role="alert">{approvalError.message}</div>}
+                            </> : request.zoomLink ? <a href={request.zoomLink} target="_blank" rel="noreferrer" className="button button-small button-outline">Open recording</a> : <span className="muted-label">No link attached</span>}
+                          </div>
                         </article>)}
                       </div>
                     )}
@@ -410,15 +456,15 @@ function AppContent() {
         </main>
       </div>
 
-      {approvalTarget !== null && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !approveRecording.isPending) setApprovalTarget(null); }}>
-        <section className="approval-modal panel" role="dialog" aria-modal="true" aria-labelledby="approval-title">
-          <div className="modal-top"><span className="modal-icon"><Send size={18} /></span><button className="icon-button" onClick={() => setApprovalTarget(null)} aria-label="Close dialog" disabled={approveRecording.isPending}><X size={17} /></button></div>
-          <h2 id="approval-title">Approve recording request?</h2>
-          <p>This will approve the student’s request and send the recording link to their WhatsApp number.</p>
-          <label className="field-label" htmlFor="zoom-link">Recording link</label>
-          <input id="zoom-link" className="input" type="url" required value={zoomLink} onChange={(event) => setZoomLink(event.target.value)} placeholder="https://…" maxLength={2048} data-testid="input-recording-link" />
-          {approvalError && <div className="inline-error" role="alert">{approvalError}</div>}
-          <div className="modal-actions"><button className="button button-quiet" onClick={() => setApprovalTarget(null)} disabled={approveRecording.isPending}>Cancel</button><button className="button button-primary" onClick={confirmApproval} disabled={approveRecording.isPending || !zoomLink.trim()}>{approveRecording.isPending ? 'Sending…' : 'Approve & send'}<Send size={15} /></button></div>
+      {contextRequest && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setContextTarget(null); }}>
+        <section className="approval-modal panel" role="dialog" aria-modal="true" aria-labelledby="context-title">
+          <div className="modal-top"><span className="modal-icon"><MessageCircle size={18} /></span><button className="icon-button" onClick={() => setContextTarget(null)} aria-label="Close dialog"><X size={17} /></button></div>
+          <h2 id="context-title">Chat context</h2>
+          <p>Last messages from {contextRequest.studentName || 'the student'} ({contextRequest.phoneNumber}) before this request.</p>
+          {contextRequest.lastChatContext
+            ? <div className="chat-context" data-testid="chat-context">{contextRequest.lastChatContext.split('\n').map((line, index) => <p className="message-preview" key={index}>{line}</p>)}</div>
+            : <p className="small-empty">No chat context was saved for this request.</p>}
+          <div className="modal-actions"><button className="button button-quiet" onClick={() => setContextTarget(null)}>Close</button></div>
         </section>
       </div>}
     </div>

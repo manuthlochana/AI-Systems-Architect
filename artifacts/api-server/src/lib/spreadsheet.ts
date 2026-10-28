@@ -70,6 +70,26 @@ export function normalizePhoneNumber(value: string): string {
   throw new Error("Enter a valid phone number in 07XXXXXXXX or E.164 format");
 }
 
+/**
+ * Uniform 9-digit lookup key for Sri Lankan numbers. Handles `+9478XXXXXXX`,
+ * `078XXXXXXX`, `94 78-XXX-XXXX` and similar mixed formats by keeping only the
+ * last 9 digits. Used for tute delivery storage/lookups and rate limiting.
+ */
+export function toPhoneKey(value: string): string {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  const match = /(\d{9})$/.exec(digits);
+  if (!match) throw new Error("Phone number must contain at least 9 digits");
+  return match[1];
+}
+
+export function tryPhoneKey(value: string): string | null {
+  try {
+    return toPhoneKey(value);
+  } catch {
+    return null;
+  }
+}
+
 export function deliveryColumnMapFromHeaders(columns: string[]): TuteDeliveryColumnMap {
   const normalized = new Map(columns.map((column) => [column.toLowerCase().replace(/[^a-z0-9]/g, ""), column]));
   const find = (candidates: string[], fallbackIndex: number): string =>

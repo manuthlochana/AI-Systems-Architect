@@ -3,6 +3,7 @@ import { ReceiveWhatsAppWebhookResponse } from "@workspace/api-zod";
 import { db, webhookEventsTable } from "@workspace/db";
 import { isYCloudConfigured } from "../lib/ycloud";
 import { verifyYCloudSignature } from "../lib/webhook-signature";
+import { isGroupChatEvent } from "../lib/whatsapp-event";
 
 const router: IRouter = Router();
 
@@ -46,6 +47,12 @@ router.post("/webhook/whatsapp", async (req, res): Promise<void> => {
   const eventType = typeof event.type === "string" ? event.type : "";
   if (!eventId || !eventType || eventId.length > 255 || eventType.length > 255) {
     res.status(400).json({ error: "Webhook event id and type are required." });
+    return;
+  }
+
+  // The assistant only serves 1-on-1 direct messages: acknowledge and discard group events.
+  if (isGroupChatEvent(event)) {
+    res.json(ReceiveWhatsAppWebhookResponse.parse({ accepted: false }));
     return;
   }
 

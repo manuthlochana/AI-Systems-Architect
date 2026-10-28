@@ -12,6 +12,7 @@ import {
   GetDashboardSummaryResponse,
   GetDeliveriesQueryParams,
   GetDeliveriesResponse,
+  DeleteDynamicContentParams,
   GetDynamicContentResponse,
   GetRecordingRequestsQueryParams,
   GetRecordingRequestsResponse,
@@ -45,8 +46,8 @@ import {
 } from "../lib/admin-auth";
 import {
   deliveryColumnMapFromHeaders,
-  normalizePhoneNumber,
   parseSpreadsheet,
+  toPhoneKey,
 } from "../lib/spreadsheet";
 import { isYCloudConfigured, sendYCloudText } from "../lib/ycloud";
 
@@ -313,6 +314,7 @@ router.post("/deliveries/import", requireAdmin, async (req, res): Promise<void> 
     return;
   }
 
+  const { deliveryWave, itemType } = parsed.data;
   const normalizedRows = new Map<
     string,
     { phoneNumber: string; studentName: string | null; trackingNumber: string; address: string | null }
@@ -325,10 +327,11 @@ router.post("/deliveries/import", requireAdmin, async (req, res): Promise<void> 
       for (const column of requiredColumns) {
         if (!(column in row)) throw new Error(`Column "${column}" was not found`);
       }
-      const phoneNumber = normalizePhoneNumber(row[columnMap.phoneNumber] ?? "");
+      // Uniform 9-digit key so +9478…, 078… and spaced/hyphenated numbers all match.
+      const phoneNumber = toPhoneKey(row[columnMap.phoneNumber] ?? "");
       const trackingNumber = (row[columnMap.trackingNumber] ?? "").trim();
       if (!trackingNumber) throw new Error("Tracking number is empty");
-      const key = `${phoneNumber}:${parsed.data.month}`;
+      const key = `${phoneNumber}:${parsed.data.month}:${deliveryWave}:${itemType}`;
       normalizedRows.set(key, {
         phoneNumber,
         studentName: row[columnMap.studentName]?.trim() || null,
@@ -347,30 +350,39 @@ router.post("/deliveries/import", requireAdmin, async (req, res): Promise<void> 
 
   const records = [...normalizedRows.values()];
   const phones = records.map((record) => record.phoneNumber);
+  // Only rows for this exact month + wave + item are matched/updated; other waves are untouched.
+  const scope = and(
+    eq(tuteDeliveriesTable.month, parsed.data.month),
+    eq(tuteDeliveriesTable.deliveryWave, deliveryWave),
+    eq(tuteDeliveriesTable.itemType, itemType),
+  );
   const existingRows = phones.length
     ? await db
         .select({ phoneNumber: tuteDeliveriesTable.phoneNumber })
         .from(tuteDeliveriesTable)
-        .where(
-          and(
-            eq(tuteDeliveriesTable.month, parsed.data.month),
-            inArray(tuteDeliveriesTable.phoneNumber, phones),
-          ),
-        )
+        .where(and(scope, inArray(tuteDeliveriesTable.phoneNumber, phones)))
     : [];
   const existingPhones = new Set(existingRows.map((row) => row.phoneNumber));
-  if (records.length) {
+  const CHUNK = 500;
+  for (let offset = 0; offset < records.length; offset += CHUNK) {
     await db
       .insert(tuteDeliveriesTable)
       .values(
-        records.map((record) => ({
+        records.slice(offset, offset + CHUNK).map((record) => ({
           ...record,
           month: parsed.data.month,
+          deliveryWave,
+          itemType,
           status: "Dispatched" as const,
         })),
       )
       .onConflictDoUpdate({
-        target: [tuteDeliveriesTable.phoneNumber, tuteDeliveriesTable.month],
+        target: [
+          tuteDeliveriesTable.phoneNumber,
+          tuteDeliveriesTable.month,
+          tuteDeliveriesTable.deliveryWave,
+          tuteDeliveriesTable.itemType,
+        ],
         set: {
           studentName: sql`excluded.student_name`,
           trackingNumber: sql`excluded.tracking_number`,
@@ -422,6 +434,23 @@ router.put("/content/:key", requireAdmin, async (req, res): Promise<void> => {
   res.json(UpsertDynamicContentResponse.parse(serializeContent(saved)));
 });
 
+router.delete("/content/:key", requireAdmin, async (req, res): Promise<void> => {
+  const params = DeleteDynamicContentParams.safeParse(req.params);
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  const deleted = await db
+    .delete(dynamicContentTable)
+    .where(eq(dynamicContentTable.key, params.data.key))
+    .returning({ key: dynamicContentTable.key });
+  if (!deleted.length) {
+    res.status(404).json({ error: "Content entry not found" });
+    return;
+  }
+  res.status(204).end();
+});
+
 router.get("/recording-requests", requireAdmin, async (req, res): Promise<void> => {
   const query = GetRecordingRequestsQueryParams.safeParse(req.query);
   if (!query.success) {
@@ -455,7 +484,13 @@ router.post(
       res.status(400).json({ error: body.error.message });
       return;
     }
-    const url = new URL(body.data.zoomLink);
+    let url: URL;
+    try {
+      url = new URL(body.data.zoomLink);
+    } catch {
+      res.status(400).json({ error: "Enter a secure Zoom recording link." });
+      return;
+    }
     const host = url.hostname.toLowerCase();
     if (
       url.protocol !== "https:" ||
@@ -504,7 +539,7 @@ router.post(
       return;
     }
 
-    const message = `ආයුබෝවන් පුතේ, ඔබ ඉල්ලූ ${request.requestedDate} ${request.classType ?? ""} පන්තියේ පටිගත කිරීම මෙන්න: ${body.data.zoomLink} ස්තූතියි පුතේ.`;
+    const message = `ආයුබෝවන් පුතේ, ඔබ ඉල්ලූ ${request.requestedDate} ${request.className && request.className !== "Unknown" ? request.className : request.classType ?? ""} පන්තියේ පටිගත කිරීම මෙන්න: ${body.data.zoomLink} ස්තූතියි පුතේ.`;
     let providerMessageId: string | null;
     try {
       providerMessageId = await sendYCloudText(
