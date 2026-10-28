@@ -68,12 +68,6 @@ catalog:
 
 autoInstallPeers: false
 
-onlyBuiltDependencies:
-  - '@swc/core'
-  - esbuild
-  - msw
-  - unrs-resolver
-
 overrides:
   "proxy-addr@^2": "^2.0.8"
   "source-map-js@^1": "^1.2.2"
@@ -166,6 +160,6 @@ overrides:
   js-yaml: '4.3.2'
 
 allowBuilds:
-  '@google/genai': set this to true or false
-  esbuild: set this to true or false
-  protobufjs: set this to true or false
+  '@google/genai': true
+  esbuild: true
+  protobufjs: true
