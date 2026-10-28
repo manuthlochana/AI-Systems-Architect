@@ -139,6 +139,8 @@ export const GetDeliveriesResponseItem = zod.object({
   "trackingNumber": zod.string(),
   "address": zod.string().nullish(),
   "status": zod.enum(['Dispatched', 'Delivered', 'Returned']),
+  "deliveryWave": zod.enum(['Wave 1', 'Wave 2', 'Wave 3', 'Wave 4']),
+  "itemType": zod.enum(['Monthly Tute', 'Special Book']),
   "createdAt": zod.coerce.date()
 })
 export const GetDeliveriesResponse = zod.array(GetDeliveriesResponseItem)
@@ -164,6 +166,8 @@ export const importTuteDeliveriesBodyColumnMapAddressMax = 200;
 
 export const ImportTuteDeliveriesBody = zod.object({
   "month": zod.string().regex(importTuteDeliveriesBodyMonthRegExp),
+  "deliveryWave": zod.enum(['Wave 1', 'Wave 2', 'Wave 3', 'Wave 4']),
+  "itemType": zod.enum(['Monthly Tute', 'Special Book']),
   "fileName": zod.string().max(importTuteDeliveriesBodyFileNameMax),
   "fileData": zod.string().max(importTuteDeliveriesBodyFileDataMax),
   "columnMap": zod.object({
@@ -209,7 +213,7 @@ export const InspectTuteDeliveryFileResponse = zod.object({
  */
 export const GetDynamicContentResponseItem = zod.object({
   "key": zod.string(),
-  "category": zod.enum(['timetable', 'pricing', 'general']),
+  "category": zod.enum(['timetable', 'pricing', 'general', 'faq', 'announcement']),
   "title": zod.string(),
   "content": zod.string(),
   "updatedAt": zod.coerce.date()
@@ -235,18 +239,32 @@ export const upsertDynamicContentBodyContentMax = 50000;
 
 
 export const UpsertDynamicContentBody = zod.object({
-  "category": zod.enum(['timetable', 'pricing', 'general']),
+  "category": zod.enum(['timetable', 'pricing', 'general', 'faq', 'announcement']),
   "title": zod.string().min(1).max(upsertDynamicContentBodyTitleMax),
   "content": zod.string().max(upsertDynamicContentBodyContentMax)
 })
 
 export const UpsertDynamicContentResponse = zod.object({
   "key": zod.string(),
-  "category": zod.enum(['timetable', 'pricing', 'general']),
+  "category": zod.enum(['timetable', 'pricing', 'general', 'faq', 'announcement']),
   "title": zod.string(),
   "content": zod.string(),
   "updatedAt": zod.coerce.date()
 })
+
+
+/**
+ * @summary Delete a dynamic FAQ or announcement
+ */
+export const deleteDynamicContentPathKeyMax = 100;
+
+
+
+export const DeleteDynamicContentParams = zod.object({
+  "key": zod.coerce.string().min(1).max(deleteDynamicContentPathKeyMax)
+})
+
+export const DeleteDynamicContentResponse = zod.void()
 
 
 /**
@@ -270,6 +288,10 @@ export const GetRecordingRequestsResponseItem = zod.object({
   "batch": zod.string().nullish(),
   "requestedDate": zod.string(),
   "classType": zod.union([zod.literal('Theory'),zod.literal('Revision'),zod.literal(null)]).nullish(),
+  "className": zod.string(),
+  "studentType": zod.enum(['Online', 'Physical', 'Unknown']),
+  "reason": zod.string(),
+  "lastChatContext": zod.string(),
   "status": zod.enum(['pending', 'approved', 'rejected']),
   "zoomLink": zod.string().nullish(),
   "createdAt": zod.coerce.date()
@@ -302,6 +324,10 @@ export const ApproveRecordingRequestResponse = zod.object({
   "batch": zod.string().nullish(),
   "requestedDate": zod.string(),
   "classType": zod.union([zod.literal('Theory'),zod.literal('Revision'),zod.literal(null)]).nullish(),
+  "className": zod.string(),
+  "studentType": zod.enum(['Online', 'Physical', 'Unknown']),
+  "reason": zod.string(),
+  "lastChatContext": zod.string(),
   "status": zod.enum(['pending', 'approved', 'rejected']),
   "zoomLink": zod.string().nullish(),
   "createdAt": zod.coerce.date()

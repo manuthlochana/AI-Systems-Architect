@@ -6,10 +6,14 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { TuteDeliveryColumnMap } from './tuteDeliveryColumnMap';
+import type { TuteDeliveryImportInputDeliveryWave } from './tuteDeliveryImportInputDeliveryWave';
+import type { TuteDeliveryImportInputItemType } from './tuteDeliveryImportInputItemType';
 
 export interface TuteDeliveryImportInput {
   /** @pattern ^\d{4}-\d{2}$ */
   month: string;
+  deliveryWave: TuteDeliveryImportInputDeliveryWave;
+  itemType: TuteDeliveryImportInputItemType;
   /** @maxLength 255 */
   fileName: string;
   /** @maxLength 15000000 */

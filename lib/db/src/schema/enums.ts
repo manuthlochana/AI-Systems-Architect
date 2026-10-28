@@ -12,6 +12,8 @@ export const contentCategoryEnum = pgEnum("content_category", [
   "timetable",
   "pricing",
   "general",
+  "faq",
+  "announcement",
 ]);
 export const recordingStatusEnum = pgEnum("recording_status", [
   "pending",
@@ -19,6 +21,11 @@ export const recordingStatusEnum = pgEnum("recording_status", [
   "rejected",
 ]);
 export const classTypeEnum = pgEnum("class_type", ["Theory", "Revision"]);
+export const recordingStudentTypeEnum = pgEnum("recording_student_type", [
+  "Online",
+  "Physical",
+  "Unknown",
+]);
 export const messageDirectionEnum = pgEnum("message_direction", [
   "inbound",
   "outbound",

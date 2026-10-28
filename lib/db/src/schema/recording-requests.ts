@@ -8,7 +8,12 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { z } from "zod/v4";
-import { batchEnum, classTypeEnum, recordingStatusEnum } from "./enums";
+import {
+  batchEnum,
+  classTypeEnum,
+  recordingStatusEnum,
+  recordingStudentTypeEnum,
+} from "./enums";
 
 export const recordingRequestsTable = pgTable(
   "recording_requests",
@@ -19,6 +24,12 @@ export const recordingRequestsTable = pgTable(
     batch: batchEnum("batch"),
     requestedDate: text("requested_date").notNull(),
     classType: classTypeEnum("class_type"),
+    className: text("class_name").notNull().default("Unknown"),
+    studentType: recordingStudentTypeEnum("student_type")
+      .notNull()
+      .default("Unknown"),
+    reason: text("reason").notNull().default(""),
+    lastChatContext: text("last_chat_context").notNull().default(""),
     status: recordingStatusEnum("status").notNull().default("pending"),
     zoomLink: text("zoom_link"),
     sourceMessageId: text("source_message_id"),

@@ -116,6 +116,24 @@ export const TuteDeliveryStatus = {
   Returned: 'Returned',
 } as const;
 
+export type TuteDeliveryDeliveryWave = typeof TuteDeliveryDeliveryWave[keyof typeof TuteDeliveryDeliveryWave];
+
+
+export const TuteDeliveryDeliveryWave = {
+  Wave_1: 'Wave 1',
+  Wave_2: 'Wave 2',
+  Wave_3: 'Wave 3',
+  Wave_4: 'Wave 4',
+} as const;
+
+export type TuteDeliveryItemType = typeof TuteDeliveryItemType[keyof typeof TuteDeliveryItemType];
+
+
+export const TuteDeliveryItemType = {
+  Monthly_Tute: 'Monthly Tute',
+  Special_Book: 'Special Book',
+} as const;
+
 export interface TuteDelivery {
   id: number;
   phoneNumber: string;
@@ -126,8 +144,28 @@ export interface TuteDelivery {
   /** @nullable */
   address?: string | null;
   status: TuteDeliveryStatus;
+  deliveryWave: TuteDeliveryDeliveryWave;
+  itemType: TuteDeliveryItemType;
   createdAt: string;
 }
+
+export type TuteDeliveryImportInputDeliveryWave = typeof TuteDeliveryImportInputDeliveryWave[keyof typeof TuteDeliveryImportInputDeliveryWave];
+
+
+export const TuteDeliveryImportInputDeliveryWave = {
+  Wave_1: 'Wave 1',
+  Wave_2: 'Wave 2',
+  Wave_3: 'Wave 3',
+  Wave_4: 'Wave 4',
+} as const;
+
+export type TuteDeliveryImportInputItemType = typeof TuteDeliveryImportInputItemType[keyof typeof TuteDeliveryImportInputItemType];
+
+
+export const TuteDeliveryImportInputItemType = {
+  Monthly_Tute: 'Monthly Tute',
+  Special_Book: 'Special Book',
+} as const;
 
 export interface TuteDeliveryColumnMap {
   /**
@@ -155,6 +193,8 @@ export interface TuteDeliveryColumnMap {
 export interface TuteDeliveryImportInput {
   /** @pattern ^\d{4}-\d{2}$ */
   month: string;
+  deliveryWave: TuteDeliveryImportInputDeliveryWave;
+  itemType: TuteDeliveryImportInputItemType;
   /** @maxLength 255 */
   fileName: string;
   /** @maxLength 15000000 */
@@ -192,6 +232,8 @@ export const DynamicContentCategory = {
   timetable: 'timetable',
   pricing: 'pricing',
   general: 'general',
+  faq: 'faq',
+  announcement: 'announcement',
 } as const;
 
 export interface DynamicContent {
@@ -209,6 +251,8 @@ export const DynamicContentInputCategory = {
   timetable: 'timetable',
   pricing: 'pricing',
   general: 'general',
+  faq: 'faq',
+  announcement: 'announcement',
 } as const;
 
 export interface DynamicContentInput {
@@ -233,6 +277,15 @@ export const RecordingRequestClassType = {
   Revision: 'Revision',
 } as const;
 
+export type RecordingRequestStudentType = typeof RecordingRequestStudentType[keyof typeof RecordingRequestStudentType];
+
+
+export const RecordingRequestStudentType = {
+  Online: 'Online',
+  Physical: 'Physical',
+  Unknown: 'Unknown',
+} as const;
+
 export type RecordingRequestStatus = typeof RecordingRequestStatus[keyof typeof RecordingRequestStatus];
 
 
@@ -252,6 +305,10 @@ export interface RecordingRequest {
   requestedDate: string;
   /** @nullable */
   classType?: RecordingRequestClassType;
+  className: string;
+  studentType: RecordingRequestStudentType;
+  reason: string;
+  lastChatContext: string;
   status: RecordingRequestStatus;
   /** @nullable */
   zoomLink?: string | null;

@@ -19,15 +19,19 @@ export const tuteDeliveriesTable = pgTable(
     month: text("month").notNull(),
     trackingNumber: text("tracking_number").notNull(),
     address: text("address"),
+    deliveryWave: text("delivery_wave").notNull().default("Wave 1"),
+    itemType: text("item_type").notNull().default("Monthly Tute"),
     status: deliveryStatusEnum("status").notNull().default("Dispatched"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index("tute_deliveries_phone_idx").on(table.phoneNumber),
     index("tute_deliveries_month_idx").on(table.month),
-    uniqueIndex("tute_deliveries_phone_month_unique").on(
+    uniqueIndex("tute_deliveries_phone_month_wave_item_unique").on(
       table.phoneNumber,
       table.month,
+      table.deliveryWave,
+      table.itemType,
     ),
   ],
 );

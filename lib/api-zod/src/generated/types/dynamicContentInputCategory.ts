@@ -13,4 +13,6 @@ export const DynamicContentInputCategory = {
   timetable: 'timetable',
   pricing: 'pricing',
   general: 'general',
+  faq: 'faq',
+  announcement: 'announcement',
 } as const;

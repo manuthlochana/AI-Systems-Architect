@@ -7,6 +7,7 @@
  */
 import type { RecordingRequestClassType } from './recordingRequestClassType';
 import type { RecordingRequestStatus } from './recordingRequestStatus';
+import type { RecordingRequestStudentType } from './recordingRequestStudentType';
 
 export interface RecordingRequest {
   id: number;
@@ -18,6 +19,10 @@ export interface RecordingRequest {
   requestedDate: string;
   /** @nullable */
   classType?: RecordingRequestClassType;
+  className: string;
+  studentType: RecordingRequestStudentType;
+  reason: string;
+  lastChatContext: string;
   status: RecordingRequestStatus;
   /** @nullable */
   zoomLink?: string | null;

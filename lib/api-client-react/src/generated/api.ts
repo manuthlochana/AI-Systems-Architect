@@ -1063,6 +1063,80 @@ export const useUpsertDynamicContent = <TError = ErrorType<void>,
       return useMutation(getUpsertDynamicContentMutationOptions(options));
     }
 
+export const getDeleteDynamicContentUrl = (key: string,) => {
+
+
+
+
+  return `/api/content/${key}`
+}
+
+/**
+ * @summary Delete a dynamic FAQ or announcement
+ */
+export const deleteDynamicContent = async (key: string, options?: Parameters<typeof customFetch>[1]): Promise<void> => {
+
+  return customFetch<void>(getDeleteDynamicContentUrl(key),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+
+export const getDeleteDynamicContentMutationKey = () => ['deleteDynamicContent'] as const;
+
+export const getDeleteDynamicContentMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteDynamicContent>>, TError,DeleteDynamicContentMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteDynamicContent>>, TError,DeleteDynamicContentMutationVariables, TContext> => {
+
+const mutationKey = getDeleteDynamicContentMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteDynamicContent>>, DeleteDynamicContentMutationVariables> = (props) => {
+          const {key} = props ?? {};
+
+          return  deleteDynamicContent(key,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteDynamicContentMutationResult = NonNullable<Awaited<ReturnType<typeof deleteDynamicContent>>>
+
+    export type DeleteDynamicContentMutationError = ErrorType<void>
+    export type DeleteDynamicContentMutationVariables = {key: string}
+
+    /**
+ * @summary Delete a dynamic FAQ or announcement
+ */
+export const useDeleteDynamicContent = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteDynamicContent>>, TError,DeleteDynamicContentMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof deleteDynamicContent>>,
+        TError,
+        DeleteDynamicContentMutationVariables,
+        TContext
+      > => {
+      return useMutation(getDeleteDynamicContentMutationOptions(options));
+    }
+
 export const getGetRecordingRequestsUrl = (params?: GetRecordingRequestsParams,) => {
   const normalizedParams = new URLSearchParams();
 

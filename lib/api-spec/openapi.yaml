@@ -276,6 +276,27 @@ paths:
                 $ref: "#/components/schemas/DynamicContent"
         "401":
           description: Admin session required
+    delete:
+      operationId: deleteDynamicContent
+      tags: [content]
+      summary: Delete a dynamic FAQ or announcement
+      security:
+        - AdminSession: []
+      parameters:
+        - in: path
+          name: key
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+      responses:
+        "204":
+          description: Content entry deleted
+        "401":
+          description: Admin session required
+        "404":
+          description: Content entry not found
   /recording-requests:
     get:
       operationId: getRecordingRequests
@@ -445,16 +466,20 @@ components:
         trackingNumber: { type: string }
         address: { type: ["string", "null"] }
         status: { type: string, enum: [Dispatched, Delivered, Returned] }
+        deliveryWave: { type: string, enum: ["Wave 1", "Wave 2", "Wave 3", "Wave 4"] }
+        itemType: { type: string, enum: ["Monthly Tute", "Special Book"] }
         createdAt: { type: string, format: date-time }
-      required: [id, phoneNumber, month, trackingNumber, status, createdAt]
+      required: [id, phoneNumber, month, trackingNumber, status, deliveryWave, itemType, createdAt]
     TuteDeliveryImportInput:
       type: object
       properties:
         month: { type: string, pattern: "^\\d{4}-\\d{2}$" }
+        deliveryWave: { type: string, enum: ["Wave 1", "Wave 2", "Wave 3", "Wave 4"] }
+        itemType: { type: string, enum: ["Monthly Tute", "Special Book"] }
         fileName: { type: string, maxLength: 255 }
         fileData: { type: string, maxLength: 15000000 }
         columnMap: { $ref: "#/components/schemas/TuteDeliveryColumnMap" }
-      required: [month, fileName, fileData, columnMap]
+      required: [month, deliveryWave, itemType, fileName, fileData, columnMap]
     TuteDeliveryFileInput:
       type: object
       properties:
@@ -498,7 +523,7 @@ components:
       type: object
       properties:
         key: { type: string }
-        category: { type: string, enum: [timetable, pricing, general] }
+        category: { type: string, enum: [timetable, pricing, general, faq, announcement] }
         title: { type: string }
         content: { type: string }
         updatedAt: { type: string, format: date-time }
@@ -506,7 +531,7 @@ components:
     DynamicContentInput:
       type: object
       properties:
-        category: { type: string, enum: [timetable, pricing, general] }
+        category: { type: string, enum: [timetable, pricing, general, faq, announcement] }
         title: { type: string, minLength: 1, maxLength: 200 }
         content: { type: string, maxLength: 50000 }
       required: [category, title, content]
@@ -519,10 +544,14 @@ components:
         batch: { type: ["string", "null"] }
         requestedDate: { type: string }
         classType: { type: ["string", "null"], enum: [Theory, Revision, null] }
+        className: { type: string }
+        studentType: { type: string, enum: [Online, Physical, Unknown] }
+        reason: { type: string }
+        lastChatContext: { type: string }
         status: { type: string, enum: [pending, approved, rejected] }
         zoomLink: { type: ["string", "null"] }
         createdAt: { type: string, format: date-time }
-      required: [id, phoneNumber, requestedDate, status, createdAt]
+      required: [id, phoneNumber, requestedDate, className, studentType, reason, lastChatContext, status, createdAt]
     RecordingApprovalInput:
       type: object
       properties:

@@ -5,6 +5,8 @@
  * API for the AL Media WhatsApp automation and admin dashboard
  * OpenAPI spec version: 0.1.0
  */
+import type { TuteDeliveryDeliveryWave } from './tuteDeliveryDeliveryWave';
+import type { TuteDeliveryItemType } from './tuteDeliveryItemType';
 import type { TuteDeliveryStatus } from './tuteDeliveryStatus';
 
 export interface TuteDelivery {
@@ -17,5 +19,7 @@ export interface TuteDelivery {
   /** @nullable */
   address?: string | null;
   status: TuteDeliveryStatus;
+  deliveryWave: TuteDeliveryDeliveryWave;
+  itemType: TuteDeliveryItemType;
   createdAt: Date;
 }
