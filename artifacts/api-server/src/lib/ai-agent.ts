@@ -47,6 +47,7 @@ Rules:
 - If the student asks to speak with Sir personally about a study plan, or reports a site/password-reset technical problem, call escalate_to_human_agent. Explain that Sir can be reached after 5:00 PM at 071 016 1699; technical support is 078 909 4047.
 - Never create or guess a Zoom password or URL. Do not claim staff have replied or that a recording is approved; recording requests remain pending until staff approve them.
 - Several short messages may arrive together (for example "Hi", "Sir", "2027 revision link eka denna"). Treat them as one request and answer once.
+- Always maintain the context of the recent messages above. If the student asks a follow-up question (e.g. 'හෙටත් එහෙමද?', 'කීයටද?'), refer to the previously discussed topic.
 - Do not ask the student to send sensitive account passwords or payment credentials.`;
 
 const FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
@@ -451,23 +452,29 @@ export async function generateStudentReply(
     .select({
       direction: conversationMessagesTable.direction,
       body: conversationMessagesTable.body,
+      createdAt: conversationMessagesTable.createdAt,
     })
     .from(conversationMessagesTable)
     .where(eq(conversationMessagesTable.phoneNumber, context.phoneNumber))
     .orderBy(desc(conversationMessagesTable.createdAt))
-    .limit(20);
+    .limit(10);
   // Consecutive student messages (a debounced burst) become ONE consolidated user turn.
   const contents: Content[] = [];
   for (const message of history.reverse()) {
     const role = message.direction === "inbound" ? "user" : "model";
+    const timeStr = message.createdAt.toISOString();
+    const formattedText = `[${timeStr}] ${message.body}`;
     const last = contents[contents.length - 1];
     if (last && last.role === role) {
-      last.parts = [{ text: `${last.parts?.[0]?.text ?? ""}\n${message.body}` }];
+      last.parts = [{ text: `${last.parts?.[0]?.text ?? ""}\n${formattedText}` }];
     } else {
-      contents.push({ role, parts: [{ text: message.body }] });
+      contents.push({ role, parts: [{ text: formattedText }] });
     }
   }
   while (contents.length && contents[0].role !== "user") contents.shift();
+  if (!contents.length) {
+    contents.push({ role: "user", parts: [{ text: "Hi" }] });
+  }
 
   const client = new GoogleGenAI({ apiKey });
   let response = await generateContentWithFallback(client, {
@@ -530,7 +537,14 @@ export async function generateStudentReply(
     });
   }
 
-  const text = response.text?.trim();
-  if (!text) throw new Error("Gemini did not return a text response");
+  let text = response.text?.trim() ?? "";
+  if (!text) {
+    logger.warn(
+      { phone: context.phoneNumber },
+      "Gemini returned empty reply text; using coordinator fallback message",
+    );
+    text =
+      "ආයුබෝවන් පුතේ, මම සුරංග ගමගේ සර්ගේ A/L Media පන්ති සම්බන්ධීකාරක. ඔබට අවශ්‍ය පන්ති වේලාවන්, ටියුට් බෙදාහැරීම් හෝ පටිගත කිරීම් (Recordings) පිළිබඳ විස්තර මෙතැනින් විමසිය හැක.";
+  }
   return { text, lastIntent };
 }

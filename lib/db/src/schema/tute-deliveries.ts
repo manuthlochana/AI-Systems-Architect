@@ -27,6 +27,8 @@ export const tuteDeliveriesTable = pgTable(
   (table) => [
     index("tute_deliveries_phone_idx").on(table.phoneNumber),
     index("tute_deliveries_month_idx").on(table.month),
+    index("tute_deliveries_phone_month_idx").on(table.phoneNumber, table.month),
+    index("tute_deliveries_tracking_idx").on(table.trackingNumber),
     uniqueIndex("tute_deliveries_phone_month_wave_item_unique").on(
       table.phoneNumber,
       table.month,

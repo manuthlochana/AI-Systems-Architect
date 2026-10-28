@@ -4,6 +4,7 @@ import { db, webhookEventsTable } from "@workspace/db";
 import { isYCloudConfigured } from "../lib/ycloud";
 import { verifyYCloudSignature } from "../lib/webhook-signature";
 import { isGroupChatEvent } from "../lib/whatsapp-event";
+import { triggerImmediateWorker } from "../lib/webhook-worker";
 
 const router: IRouter = Router();
 
@@ -50,6 +51,24 @@ router.post("/webhook/whatsapp", async (req, res): Promise<void> => {
     return;
   }
 
+  // Webhook Replay Attack Mitigation: reject events older than 5 minutes (300,000ms)
+  const messageObj =
+    typeof event.whatsappInboundMessage === "object" && event.whatsappInboundMessage !== null
+      ? (event.whatsappInboundMessage as Record<string, unknown>)
+      : undefined;
+  const rawTimestamp = event.createTime || messageObj?.sendTime;
+  if (rawTimestamp) {
+    const eventTime = new Date(String(rawTimestamp)).getTime();
+    if (!Number.isNaN(eventTime)) {
+      const ageMs = Math.abs(Date.now() - eventTime);
+      if (ageMs > 300_000) {
+        req.log.warn({ eventId, rawTimestamp, ageMs }, "Rejected stale or replay webhook event");
+        res.status(400).json({ error: "Webhook event timestamp is older than 5 minutes." });
+        return;
+      }
+    }
+  }
+
   // The assistant only serves 1-on-1 direct messages: acknowledge and discard group events.
   if (isGroupChatEvent(event)) {
     res.json(ReceiveWhatsAppWebhookResponse.parse({ accepted: false }));
@@ -68,6 +87,11 @@ router.post("/webhook/whatsapp", async (req, res): Promise<void> => {
       .returning({ providerEventId: webhookEventsTable.providerEventId });
 
     res.json(ReceiveWhatsAppWebhookResponse.parse({ accepted: inserted.length > 0 }));
+
+    // Instant decoupled pump: trigger worker immediately instead of waiting for 5s poll interval.
+    if (inserted.length > 0) {
+      triggerImmediateWorker();
+    }
   } catch (error) {
     req.log.error({ eventId }, "Could not persist WhatsApp webhook event");
     res.status(503).json({ error: "Webhook event could not be stored. Please retry." });

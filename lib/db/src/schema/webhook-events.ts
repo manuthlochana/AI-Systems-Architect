@@ -11,4 +11,5 @@ export const webhookEventsTable = pgTable("webhook_events", {
   receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index("webhook_events_status_received_idx").on(table.status, table.receivedAt),
+  index("webhook_events_status_processing_idx").on(table.status, table.processingAt),
 ]);

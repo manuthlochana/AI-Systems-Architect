@@ -18,7 +18,7 @@ const WHATSAPP_SESSION_MS = 24 * 60 * 60_000;
 const HUMAN_HANDOFF_MS = 48 * 60 * 60 * 1000;
 
 /** Rapid-fire messages inside this window are merged into one Gemini prompt. */
-const DEBOUNCE_WINDOW_MS = 7_000;
+const DEBOUNCE_WINDOW_MS = 2_000;
 const DEBOUNCE_MAX_RETRIES = 2;
 const DEBOUNCE_RETRY_DELAY_MS = 15_000;
 
@@ -26,6 +26,8 @@ const DAILY_MESSAGE_LIMIT = 25;
 const COLOMBO_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const DAILY_LIMIT_MESSAGE =
   "ඔබ අද දිනට හිමි පණිවිඩ සීමාව ඉක්මවා ඇත. හදිසි අවශ්‍යතාවයක් සඳහා කාර්යාලය අමතන්න: 071 016 1699.";
+const NON_TEXT_WARNING_MESSAGE =
+  "පුතේ, දැනට මට ලිඛිත පණිවිඩ (Text messages) පමණක් කියවිය හැක. කරුණාකර ඔබගේ විමසීම හෝ ගැටලුව Type කර එවන්න.";
 
 type WebhookEvent = typeof webhookEventsTable.$inferSelect;
 
@@ -121,6 +123,7 @@ function scheduleDebouncedReply(
 async function flushDebounced(key: string): Promise<void> {
   const entry = debounceQueue.get(key);
   if (!entry) return;
+  clearTimeout(entry.timer);
   debounceQueue.delete(key);
 
   try {
@@ -241,6 +244,23 @@ async function processInbound(event: WebhookEvent): Promise<void> {
     .returning({ id: conversationMessagesTable.id });
 
   if (!savedInbound) return;
+
+  // Media / Audio / Document / Sticker: Discard from AI pipeline to prevent crashes, memory exhaustion and API fees.
+  if (inbound.type !== "text") {
+    if (mode !== "human") {
+      await saveOutboundAndSend(
+        `almedia_media_${event.providerEventId}`.slice(0, 120),
+        phoneNumber,
+        NON_TEXT_WARNING_MESSAGE,
+      );
+    }
+    logger.info(
+      { eventId: event.providerEventId, type: inbound.type, phone: phoneNumber },
+      "Non-text inbound WhatsApp message responded with polite text-only warning",
+    );
+    return;
+  }
+
   if (mode === "human" || !inbound.body) return;
 
   const age = Date.now() - event.receivedAt.getTime();
@@ -359,22 +379,49 @@ async function processOneEvent(): Promise<boolean> {
 }
 
 let running = false;
+let workPending = false;
 
-export function startWebhookWorker(): void {
-  const poll = async () => {
-    if (running || !process.env.GEMINI_API_KEY || !isYCloudConfigured()) return;
-    running = true;
-    try {
+async function poll(): Promise<void> {
+  if (running) {
+    workPending = true;
+    return;
+  }
+  if (!process.env.GEMINI_API_KEY || !isYCloudConfigured()) return;
+
+  running = true;
+  try {
+    do {
+      workPending = false;
       for (let processed = 0; processed < 10; processed += 1) {
         if (!(await processOneEvent())) break;
       }
-    } catch {
-      logger.error("WhatsApp worker could not query the event queue");
-    } finally {
-      running = false;
-    }
-  };
+    } while (workPending);
+  } catch (error) {
+    logger.error(
+      { err: error instanceof Error ? error.message : String(error) },
+      "WhatsApp worker could not query the event queue",
+    );
+  } finally {
+    running = false;
+  }
+}
 
+/** Immediately triggers a worker queue pump without waiting for the next 5s poll interval. */
+export function triggerImmediateWorker(): void {
+  setImmediate(() => {
+    void poll();
+  });
+}
+
+/** Graceful shutdown helper: flushes any in-memory debounced student replies before process exit. */
+export async function flushAllDebouncedReplies(): Promise<void> {
+  const keys = Array.from(debounceQueue.keys());
+  if (!keys.length) return;
+  logger.info({ count: keys.length }, "Flushing pending debounced replies before shutdown");
+  await Promise.allSettled(keys.map((key) => flushDebounced(key)));
+}
+
+export function startWebhookWorker(): void {
   void poll();
   setInterval(() => void poll(), 5_000);
 }

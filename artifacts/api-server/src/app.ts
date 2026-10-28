@@ -6,6 +6,7 @@ import cors from "cors";
 import pinoHttp from "pino-http";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import { errorHandler } from "./middlewares/error-handler";
 
 const app: Express = express();
 
@@ -53,5 +54,7 @@ if (fs.existsSync(path.join(staticDir, "index.html"))) {
     res.sendFile(path.join(staticDir, "index.html"));
   });
 }
+
+app.use(errorHandler);
 
 export default app;
