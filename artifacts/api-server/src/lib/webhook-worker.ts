@@ -8,7 +8,11 @@ import {
 import { generateStudentReply } from "./ai-agent";
 import { logger } from "./logger";
 import { normalizePhoneNumber, sanitizePhone9Digits, toPhoneKey } from "./spreadsheet";
-import { isGroupChatEvent, parseInboundMessage } from "./whatsapp-event";
+import {
+  isGroupChatEvent,
+  parseInboundMessage,
+  parseStaffOutboundMessage,
+} from "./whatsapp-event";
 import { isYCloudConfigured, sendWhatsAppTyping, sendYCloudText } from "./ycloud";
 
 const MAX_ATTEMPTS = 5;
@@ -236,32 +240,51 @@ async function processInbound(event: WebhookEvent): Promise<void> {
 
   if (!savedInbound) return;
 
-  // SMART HUMAN HANDOFF & AUTO-RESET (ANTI-DEADLOCK):
+  // SMART HUMAN HANDOFF & 30-MINUTE AUTO-RESET:
   // If mode === 'human':
-  // - Inspect the timestamp of the last message sent by staff/admin (outbound).
-  // - If more than 12 hours have passed since the last staff message (or no staff message exists),
-  //   automatically update the conversation record in Supabase to mode = 'bot'.
-  // - Log this auto-reset event and allow the AI agent to answer the student's new inquiry.
-  // - Otherwise, keep the bot silenced and exit.
+  // - Inspect the timestamp of the last message sent by staff (conversationsTable.lastStaffMessageAt).
+  // - If elapsed time > 30 minutes:
+  //   - Automatically update conversation state: mode = 'bot'.
+  //   - Log: [Auto-Reset] Inactivity threshold (30m) exceeded. Conversation switched back to bot mode.
+  //   - Proceed to process the message through the Gemini AI agent.
+  // - If elapsed time <= 30 minutes:
+  //   - Keep the bot completely silent.
+  //   - Log: [Muted] Human conversation active within 30-minute grace window. Skipping AI response.
+  //   - Terminate processing for this message (do not trigger AI).
   if (mode === "human") {
-    const [lastStaffMessage] = await db
-      .select({ createdAt: conversationMessagesTable.createdAt })
-      .from(conversationMessagesTable)
-      .where(
-        and(
-          eq(conversationMessagesTable.phoneNumber, phoneNumber),
-          eq(conversationMessagesTable.direction, "outbound"),
-        ),
-      )
-      .orderBy(desc(conversationMessagesTable.createdAt))
-      .limit(1);
+    let lastStaffAt = existingConversation?.lastStaffMessageAt;
 
-    const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
-    const timeSinceLastStaff = lastStaffMessage
-      ? Date.now() - lastStaffMessage.createdAt.getTime()
+    // Fallback: If lastStaffMessageAt wasn't explicitly populated in conversationsTable,
+    // look up the newest outbound staff message in conversationMessagesTable
+    if (!lastStaffAt) {
+      const [lastStaffMessage] = await db
+        .select({ createdAt: conversationMessagesTable.createdAt })
+        .from(conversationMessagesTable)
+        .where(
+          and(
+            eq(conversationMessagesTable.phoneNumber, phoneNumber),
+            eq(conversationMessagesTable.direction, "outbound"),
+            or(
+              isNull(conversationMessagesTable.externalId),
+              sql`${conversationMessagesTable.externalId} NOT LIKE 'almedia_%'`,
+            ),
+          ),
+        )
+        .orderBy(desc(conversationMessagesTable.createdAt))
+        .limit(1);
+
+      if (lastStaffMessage?.createdAt) {
+        lastStaffAt = lastStaffMessage.createdAt;
+      }
+    }
+
+    const elapsedMs = lastStaffAt
+      ? Date.now() - new Date(lastStaffAt).getTime()
       : Infinity;
 
-    if (timeSinceLastStaff > TWELVE_HOURS_MS) {
+    const THIRTY_MINUTES_MS = 30 * 60 * 1000;
+
+    if (elapsedMs > THIRTY_MINUTES_MS) {
       await db
         .update(conversationsTable)
         .set({ mode: "bot" })
@@ -271,11 +294,12 @@ async function processInbound(event: WebhookEvent): Promise<void> {
         {
           phone: phoneNumber,
           eventId: event.providerEventId,
-          lastStaffMessageAt: lastStaffMessage?.createdAt ?? null,
-          hoursElapsed: timeSinceLastStaff === Infinity ? "never" : (timeSinceLastStaff / (3600 * 1000)).toFixed(1),
+          lastStaffMessageAt: lastStaffAt,
+          minutesElapsed: elapsedMs === Infinity ? "never" : (elapsedMs / (60 * 1000)).toFixed(1),
         },
-        "Auto-reset conversation mode from 'human' to 'bot' after >12 hours inactivity",
+        "[Auto-Reset] Inactivity threshold (30m) exceeded. Conversation switched back to bot mode.",
       );
+      // Proceed to process the message through the Gemini AI agent!
     } else {
       const pending = debounceQueue.get(phoneKey);
       if (pending) {
@@ -284,11 +308,12 @@ async function processInbound(event: WebhookEvent): Promise<void> {
       }
       logger.info(
         {
-          eventId: event.providerEventId,
           phone: phoneNumber,
-          lastStaffMessageAt: lastStaffMessage?.createdAt,
+          eventId: event.providerEventId,
+          lastStaffMessageAt: lastStaffAt,
+          minutesRemaining: ((THIRTY_MINUTES_MS - elapsedMs) / (60 * 1000)).toFixed(1),
         },
-        "Conversation is in human mode (<12h since staff message); message saved, bot strictly silenced",
+        "[Muted] Human conversation active within 30-minute grace window. Skipping AI response.",
       );
       return;
     }
@@ -399,16 +424,103 @@ async function claimNextEvent(): Promise<WebhookEvent | undefined> {
   return claimed;
 }
 
+async function processOutboundOrUpdate(event: WebhookEvent): Promise<void> {
+  const staffMsg = parseStaffOutboundMessage(event.payload);
+  if (!staffMsg) return;
+
+  let phoneNumber: string;
+  let phoneKey: string;
+  try {
+    phoneNumber = normalizePhoneNumber(staffMsg.phoneNumber);
+    phoneKey = toPhoneKey(phoneNumber);
+  } catch {
+    return;
+  }
+
+  // Cancel any pending debounce timer for this student so bot stays completely silent
+  const pending = debounceQueue.get(phoneKey);
+  if (pending) {
+    clearTimeout(pending.timer);
+    debounceQueue.delete(phoneKey);
+  }
+
+  const now = staffMsg.sentAt || new Date();
+
+  // If this message was already recorded in conversationMessagesTable, just update delivery status if needed
+  if (staffMsg.providerMessageId) {
+    const [existing] = await db
+      .select({ id: conversationMessagesTable.id })
+      .from(conversationMessagesTable)
+      .where(eq(conversationMessagesTable.providerMessageId, staffMsg.providerMessageId))
+      .limit(1);
+
+    if (existing) {
+      if (staffMsg.status) {
+        await db
+          .update(conversationMessagesTable)
+          .set({ deliveryStatus: staffMsg.status })
+          .where(eq(conversationMessagesTable.id, existing.id));
+      }
+      return;
+    }
+  }
+
+  // Whenever an outbound message is dispatched to a student (either from the WhatsApp Business mobile app or Admin Dashboard):
+  // Update the student's conversation record:
+  // - mode = 'human'
+  // - last_staff_message_at = new Date()
+  await db
+    .insert(conversationsTable)
+    .values({
+      phoneNumber,
+      mode: "human",
+      lastStaffMessageAt: now,
+      lastMessageAt: now,
+    })
+    .onConflictDoUpdate({
+      target: conversationsTable.phoneNumber,
+      set: {
+        mode: "human",
+        lastStaffMessageAt: now,
+        lastMessageAt: sql`greatest(${conversationsTable.lastMessageAt}, ${now})`,
+      },
+    });
+
+  if (staffMsg.providerMessageId) {
+    await db
+      .insert(conversationMessagesTable)
+      .values({
+        phoneNumber,
+        direction: "outbound",
+        body: staffMsg.body,
+        providerMessageId: staffMsg.providerMessageId,
+        externalId: staffMsg.externalId,
+        deliveryStatus: staffMsg.status || "sent",
+        createdAt: now,
+      })
+      .onConflictDoNothing();
+  }
+
+  logger.info(
+    { phone: phoneNumber, providerMessageId: staffMsg.providerMessageId },
+    "Staff outbound message tracked: mode set to 'human', last_staff_message_at updated",
+  );
+}
+
 async function processOneEvent(): Promise<boolean> {
   const event = await claimNextEvent();
   if (!event) return false;
   try {
-    await processInbound(event);
+    if (event.eventType === "whatsapp.inbound_message.received") {
+      await processInbound(event);
+    } else {
+      await processOutboundOrUpdate(event);
+    }
     await db
       .update(webhookEventsTable)
       .set({ status: "processed", processingAt: null, lastError: null })
       .where(eq(webhookEventsTable.providerEventId, event.providerEventId));
-  } catch {
+  } catch (error) {
     const terminal = event.attempts >= MAX_ATTEMPTS;
     await db
       .update(webhookEventsTable)
@@ -421,7 +533,12 @@ async function processOneEvent(): Promise<boolean> {
       })
       .where(eq(webhookEventsTable.providerEventId, event.providerEventId));
     logger.error(
-      { eventId: event.providerEventId, attempt: event.attempts, terminal },
+      {
+        eventId: event.providerEventId,
+        attempt: event.attempts,
+        terminal,
+        err: error instanceof Error ? error.message : String(error),
+      },
       "WhatsApp webhook processing failed",
     );
   }

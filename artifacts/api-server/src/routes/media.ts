@@ -60,9 +60,15 @@ function serializeConversation(
   row: typeof conversationsTable.$inferSelect & { lastMessage: string | null },
 ) {
   return {
-    ...row,
+    phoneNumber: row.phoneNumber,
+    studentName: row.studentName,
+    batch: row.batch,
+    studentType: row.studentType,
+    mode: row.mode,
+    lastIntent: row.lastIntent,
     lastMessageAt: row.lastMessageAt.toISOString(),
     createdAt: row.createdAt.toISOString(),
+    lastMessage: row.lastMessage,
   };
 }
 
@@ -233,7 +239,11 @@ router.patch(
 
     const [conversation] = await db
       .update(conversationsTable)
-      .set({ mode: body.data.mode, lastMessageAt: new Date() })
+      .set({
+        mode: body.data.mode,
+        lastMessageAt: new Date(),
+        ...(body.data.mode === "human" ? { lastStaffMessageAt: new Date() } : {}),
+      })
       .where(eq(conversationsTable.phoneNumber, params.data.phoneNumber))
       .returning();
     if (!conversation) {
@@ -290,7 +300,11 @@ router.post(
 
     const [conversation] = await db
       .update(conversationsTable)
-      .set({ mode, lastMessageAt: new Date() })
+      .set({
+        mode,
+        lastMessageAt: new Date(),
+        ...(mode === "human" ? { lastStaffMessageAt: new Date() } : {}),
+      })
       .where(eq(conversationsTable.phoneNumber, phoneToUpdate))
       .returning();
 
@@ -701,10 +715,19 @@ router.post(
 
     await db
       .insert(conversationsTable)
-      .values({ phoneNumber: request.phoneNumber, mode: "bot" })
+      .values({
+        phoneNumber: request.phoneNumber,
+        mode: "human",
+        lastStaffMessageAt: new Date(),
+        lastMessageAt: new Date(),
+      })
       .onConflictDoUpdate({
         target: conversationsTable.phoneNumber,
-        set: { lastMessageAt: new Date() },
+        set: {
+          mode: "human",
+          lastStaffMessageAt: new Date(),
+          lastMessageAt: new Date(),
+        },
       });
     await db.insert(conversationMessagesTable).values({
       phoneNumber: request.phoneNumber,

@@ -10,6 +10,7 @@ export const conversationsTable = pgTable("conversations", {
   studentType: studentTypeEnum("student_type").notNull().default("new"),
   mode: conversationModeEnum("mode").notNull().default("bot"),
   lastIntent: text("last_intent"),
+  lastStaffMessageAt: timestamp("last_staff_message_at", { withTimezone: true }),
   lastMessageAt: timestamp("last_message_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
