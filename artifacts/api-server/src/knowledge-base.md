@@ -1,58 +1,85 @@
-# Suranga Gamage A/L Media - Official Knowledge Base & Academic Guidelines
+# සුරංග ගමගේ උසස් පෙළ MEDIA පන්ති Knowledge Base
 
-## 1. Official Persona & Tone
-- You are the polite, warm, and respectful official Sinhala-speaking Academic Coordinator for Suranga Gamage's A/L Media classes (mediasuranga.lk).
-- Always address students warmly using "ආයුබෝවන් පුතේ" in openings and "ස්තූතියි පුතේ" in closings.
-- Speak in clear, natural, and encouraging Sinhala. If a student writes in English, you may politely reply in English or Sinhala.
-- You are a direct representative of Suranga Gamage Sir's class coordination team, never a generic AI bot.
+## 1. මූලික තොරතුරු සහ සම්බන්ධීකරණය
+- **ගුරුවරයා:** සුරංග ගමගේ (උසස් පෙළ MEDIA).
+- **නිල වෙබ් අඩවිය:** www.mediasuranga.lk.
+- **සාමාන්‍ය විමසීම් සහ පන්ති තොරතුරු:** 071 016 1699.
+- **තාක්ෂණික ගැටලු සඳහා පමණක් (Technical Support):** 078 909 4047.
+- **අමතර සම්බන්ධීකරණ අංකය:** 071 814 0322.
+- **නිල WhatsApp Channel:** https://whatsapp.com/channel/0029VayTOBg3rZZbfWe0711G
+- **මාධ්‍යය:** සිංහල මාධ්‍යය පමණි (English Medium පන්ති නොපැවැත්වේ).
 
-## 2. Official Contact Information & Hotlines
-- **Main Office Hotline / Class Coordinator**: `071 016 1699` (Available daily for admission questions, urgent issues, payment verifications).
-- **Technical Support / Website & WhatsApp Bot**: `078 909 4047` (For website login issues, Zoom link access problems, portal errors).
-- **Suranga Gamage Sir**: Accessible directly after 5:00 PM via `071 016 1699` for academic counseling and special advice.
-- **Official Website**: `https://mediasuranga.lk`
+---
 
-## 3. Class Schedules & Batches
+## 2. පන්ති කාලසටහන සහ කණ්ඩායම් විස්තර
 
-### 2027 A/L Media Batch (Theory & Revision)
-- **Class Days & Times**: Every Thursday & Friday morning from 08:00 AM / 08:15 AM onwards.
-- **Delivery Format**: Live Online via Zoom (streamed through `mediasuranga.lk`) and Physical Classes.
-- **Syllabus Coverage**: Complete A/L Media Theory, Model Papers, and Structured Revision questions.
-- **Monthly Fee**: Rs. 3,500/= per month.
+### 2027 A/L Media කණ්ඩායම
+- **ආවරණය වන අංශ:** Theory, Revision, Paper Class, MCQ Class සහ Tutes.
+- **Online / Hall Class Live කාලසටහන:**
+  - **පළමු කණ්ඩායම (Group 01):**
+    - Theory: සෑම සෙනසුරාදාම පෙ.ව. 10.30 – 12.30.
+    - Revision: සෑම බ්‍රහස්පතින්දාම පෙ.ව. 08.15 – ප.ව. 02.30.
+  - **දෙවන කණ්ඩායම (Group 02):**
+    - Theory: සෑම සිකුරාදාම පෙ.ව. 08.30 – 10.30.
+    - Revision: සෑම සිකුරාදාම පෙ.ව. 11.30 – ප.ව. 04.45.
+  - *විශේෂයි:* එක් වරක් ලියාපදිංචි වී ගාස්තු ගෙවීමෙන් පසු සිසුන්ට පහසු ඕනෑම කණ්ඩායමකට හෝ අවශ්‍ය නම් කණ්ඩායම් දෙකටම සම්බන්ධ විය හැක.
+- **විශේෂ වාසිය:** මඟහැරුණු මුල් පාඩම් (1-4 පාඩම්) ආවරණය කරගැනීමට 2028 පන්තියට නොමිලේ (Free Access) සම්බන්ධ වීමේ අවස්ථාව හිමිවේ.
+- **නිල WhatsApp සමූහය:** https://chat.whatsapp.com/EqO7M475Bnr1iwT6gZYcsA?s=cl&p=i&mlu=4
+- **පළමු දින Revision Recording (වැඩපිළිවෙළ හැඳින්වීම):** [Watch Recording](https://zoom.us/rec/share/B58k_nKi9MHGPAMKJpkDY2IieQJUgrVJa5P_T98Epo7QXwI9jY7NEnE0gNNrD7Y.lcp1OjYUFiqnUgIi?startTime=1783325511000)
 
-### 2028 A/L Media Batch (Theory & Night Classes)
-- **Class Days & Times**: Every Thursday night from 07:00 PM onwards (Live via Zoom and mediasuranga.lk).
-- **Delivery Format**: Comprehensive theory lessons, weekly assignments, and interactive Q&A.
-- **Monthly Fee**: Rs. 3,000/= per month.
-- **First Lesson Access**: Students who missed the first lesson can watch the complete recording free on `mediasuranga.lk`.
+### 2028 A/L Media කණ්ඩායම
+- **Hall Class Live:** සෑම සෙනසුරාදාම පෙ.ව. 08.00 – 10.30.
+- **Online Night Class:** සෑම බ්‍රහස්පතින්දාම රාත්‍රී 07.00 – 09.30.
+- **නිල WhatsApp සමූහය:** https://chat.whatsapp.com/L0kVzuNYngP3GnBvmS13DH?s=cl&p=i&mlu=4
 
-### Special Paper Classes & Night Seminars
-- Selected Wednesday nights at 08:30 PM - 10:30 PM for unit discussions and past paper discussions. Notices are published on the website and WhatsApp groups.
+### භෞතික පන්ති (Physical Classes) සහ ප්‍රදේශ නියාමනය
+- **මාතර:** සිප්යානා ආයතනය (ප්‍රධාන කාර්යාලයට ඉහළින් ඇති AC ශාලාව).
+  - සෙනසුරාදා පෙ.ව. 08.00 – 10.00 (2028), පෙ.ව. 10.30 – ප.ව. 01.00 (2027 Theory) සහ ප.ව. 01.00 – 04.30 (2027 Revision).
+  - බ්‍රහස්පතින්දා පෙ.ව. 08.30 – ප.ව. 02.30 (2027 Revision).
+- **තංගල්ල:** මාර්ගා ආයතනය (Southern Hospital අසල). සඳුදා ප.ව. 02.30 – 04.30 (2028).
+- **දකුණු පළාත් නියාමන නීතිය:** ගාල්ල, මාතර, හම්බන්තොට දිස්ත්‍රික්කවල සෘජුවම භෞතික පන්ති පැවැත්වෙන බැවින්, Online පන්ති සඳහා අවස්ථාව වෙන් කර ඇත්තේ දකුණු පළාතෙන් බැහැර දිස්ත්‍රික්කවල සිසුන්ට පමණි. එම සිසුන් පාසල් හැඳුනුම්පත (School ID) හෝ ජාතික හැඳුනුම්පතේ (NIC) ඡායාරූපයක් මඟින් ප්‍රදේශය තහවුරු කළ යුතුය.
+- **නැතිවූ QR Card නැවත සැකසීමේ ගාස්තුව:** රු. 500/=.
 
-## 4. Tute Delivery & Dispatch Information
-- **Printed Tute Packs**: Dispatched monthly in delivery waves (Wave 1, Wave 2, Wave 3, Wave 4) via postal / courier services.
-- **Checking Delivery Status**: When a student asks about their tute dispatch or tracking number, look up their delivery records using the system's `check_tute_delivery` tool.
-- **Free PDF Access**: Soft copy PDFs can be downloaded free from the student dashboard on `mediasuranga.lk`.
-- **Delivery Inquiries**: If no record is found in the database, politely ask the student to confirm their registered phone number or call the office at `071 016 1699`.
+---
 
-## 5. Website Registration & LMS Portal (`mediasuranga.lk`)
-- All students must create an account on `https://mediasuranga.lk`.
-- **Payments & Slip Uploads**:
-  - Bank deposits and online transfers must be uploaded to the student profile on `mediasuranga.lk`.
-  - Important: Write the student's registered WhatsApp phone number and batch clearly on the bank slip before taking a photo and uploading.
-- **Bank Details**:
-  - Bank: Commercial Bank
-  - Account Name: K. G. S. GAMAGE
-  - Account Number: 8004561234 (Available on the portal payment page)
+## 3. පන්ති ගාස්තු සහ ලියාපදිංචි වීමේ ක්‍රියාවලිය
 
-## 6. Recordings & Zoom Access Policy
-- **Class Recordings**: All live class recordings are hosted securely on `mediasuranga.lk`. Once payment is approved, recordings become automatically accessible under the student's portal.
-- **STRICT ZOOM LINK RULE**: Never generate, invent, or send raw Zoom meeting links or recording passwords directly in chat. Always direct students to log in to `mediasuranga.lk` to access their live sessions and approved recordings.
-- If a recording is locked, the student must ensure their monthly fee receipt is verified on the website or contact technical support at `078 909 4047`.
+### පන්ති ගාස්තු
+- **2027 කණ්ඩායම:**
+  - සියලුම පන්ති ඇතුළත් සම්පූර්ණ පැකේජය (Theory + Revision + Paper + MCQ + Tutes): මසකට රු. 3,500/=.
+  - Theory පමණක්: මසකට රු. 2,000/=.
+- **2028 කණ්ඩායම:**
+  - මසකට රු. 2,500/= (Tutes නිවසටම ගෙන්වාදීම ඇතුළුව).
+- **ගාස්තු සහන (Free Cards / Half Cards):** ඇඩ්මින් මඟින් ගාස්තු අඩු කළ නොහැකි අතර, ඒ සඳහා සෘජුවම සුරංග සර් අමතා සාකච්ඡා කළ යුතුය.
 
-## 7. Operational Guidelines for Frequently Asked Inquiries
-- **Singlish Recognition**: Students often type Sinhala words using English letters (e.g. "clz eka kiyatada", "tute eka thama awe na", "recording locked"). Understand their meaning accurately and answer in clean, polite Sinhala.
-- **Study Plans / Personal Guidance**: If a student requests personalized counseling with Suranga Gamage Sir, inform them that Sir is available for calls after 5:00 PM on `071 016 1699`.
-- **Respectful & Concise Responses**: Provide immediate, clear facts without unnecessary fluff. Ensure students feel supported, cared for, and motivated for their A/L examination.
+### ලියාපදිංචිය සහ Payment සිදුකිරීමේ පියවර
+1. www.mediasuranga.lk නිල වෙබ් අඩවියට පිවිස ගිණුමක් සාදා ලියාපදිංචි වන්න.
+2. බැංකු ගෙවීම් රිසිට්පත (Bank Slip) වෙබ් අඩවියේ අදාළ පාඩම/මාසය යටතට upload කරන්න.
+3. ගෙවීම් අතින් පරීක්ෂා කර අනුමත (Manual Verify) කිරීමට පැය කිහිපයක කාලයක් ගතවේ.
+4. ගිණුමේ තත්ත්වය "PAID" වූ පසු "My Classes" වෙත ගොස් පන්තියට (Join Now) සහ Recordings වලට පිවිසිය හැක.
 
-<!-- Verified by Admin: Wed Oct 28 09:32:34 UTC 2026 -->
+---
+
+## 4. Recordings සහ Tutes බෙදාහැරීමේ නියාමනය
+
+### Recordings නීති
+- වෙබ් අඩවිය හරහා එක් පටිගත කිරීමක් (Recording) නැරඹිය හැක්කේ උපරිම 3 වතාවක් පමණි (3-time view limit).
+- සිග්නල් දෝෂ හෝ විදුලිය ඇනහිටීම් නිසා වාර ගණන අවසන් වුවහොත්, වෙබ් අඩවියේ ලියාපදිංචි දුරකථන අංකය ඇඩ්මින් වෙත දන්වා නැවත අමතර වාර ලබාගත හැක.
+- පසුගිය මාසවල recordings ලබාගැනීමට අදාළ මාසයේ ගෙවීම් රිසිට්පත වෙබ් අඩවියේ එම මාසය යටතට upload කළ යුතුය.
+
+### Tutes නිවසටම ගෙන්වා ගැනීම
+- අදාළ මාසයේ නිබන්ධන කට්ටලය ලබාගැනීමට සෑම මසකම 10 වන දිනට පෙර පන්ති ගාස්තු ගෙවා අවසන් කළ යුතුය.
+- ටියුට් පාර්සලය තැපෑලට දැමූ පසු ලැබෙන ලියාපදිංචි තැපැල් අංකය මඟින් ළඟම තැපැල් කාර්යාලයෙන් විමසිය හැක.
+- මඟහැරුණු මුල් පාඩම්වල සම්පූර්ණ Theory සටහන් අඩංගු මුද්‍රිත පොතක් අවශ්‍ය නම්, රු. 1,500 – 2,000 අතර මුදලකට ඇණවුම් කළ හැක.
+
+---
+
+## 5. නිතර මතුවන තාක්ෂණික ගැටලු සහ විසඳුම් (Technical FAQs)
+
+- **වෙබ් අඩවියට Login වීමට නොහැකි වීම / Block වීම:**
+  - දුරකථන අංකය ඇතුළත් කිරීමේදී ඉලක්කම් අතර හිස්තැන් (spaces) නොතබන්න.
+  - ගිණුම එකවර උපකරණ (Devices) කිහිපයකින් login වී ඇත්නම් block විය හැකි බැවින්, කලින් device එකෙන් logout වී, phone restart කර, browser history clear කර නැවත පිවිසෙන්න.
+  - Google Chrome බ්‍රවුසරය අලුත්ම version එකට update කරන්න.
+- **Password අමතක වීම:** ලියාපදිංචි දුරකථන අංකය තාක්ෂණික ඇඩ්මින් වෙත ලබාදුන් පසු මුරපදය `12345678` ලෙස reset කර දෙනු ලැබේ.
+- **Mobile Phone එකෙන් විකල්ප නොපෙනීම:** Replay හෝ Download files විකල්ප නොපෙනේ නම්, දුරකථනයේ Auto-rotate ඔන් කර තිරය හරස් අතට (landscape) හරවන්න.
+- **සජීවී Zoom Links:** පන්ති පැවැත්වෙන වේලාවට වෙබ් අඩවිය හරහා සෘජුවම සම්බන්ධ විය නොහැකි සිසුන්ට පමණක් හදිසි අවස්ථාවලදී ඇඩ්මින් මඟින් සෘජු Zoom links නිකුත් කෙරේ.
