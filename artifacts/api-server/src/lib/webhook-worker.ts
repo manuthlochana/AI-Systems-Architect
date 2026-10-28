@@ -7,9 +7,9 @@ import {
 } from "@workspace/db";
 import { generateStudentReply } from "./ai-agent";
 import { logger } from "./logger";
-import { normalizePhoneNumber, toPhoneKey } from "./spreadsheet";
+import { normalizePhoneNumber, sanitizePhone9Digits, toPhoneKey } from "./spreadsheet";
 import { isGroupChatEvent, parseInboundMessage } from "./whatsapp-event";
-import { isYCloudConfigured, sendYCloudText } from "./ycloud";
+import { isYCloudConfigured, sendWhatsAppTyping, sendYCloudText } from "./ycloud";
 
 const MAX_ATTEMPTS = 5;
 const RETRY_DELAY_MS = 15_000;
@@ -135,6 +135,9 @@ async function flushDebounced(key: string): Promise<void> {
     // Staff may have taken over while the debounce window was open.
     if (conversation?.mode === "human") return;
 
+    // Dispatch typing indicator while AI generates the response
+    void sendWhatsAppTyping(entry.phoneNumber, entry.providerMessageId).catch(() => {});
+
     // All inbound texts in the burst are in the DB; generateStudentReply merges
     // consecutive student messages into a single consolidated prompt.
     const reply = await generateStudentReply({
@@ -233,25 +236,62 @@ async function processInbound(event: WebhookEvent): Promise<void> {
 
   if (!savedInbound) return;
 
-  // STRICT HUMAN HANDOFF & BOT SILENCING:
+  // SMART HUMAN HANDOFF & AUTO-RESET (ANTI-DEADLOCK):
   // If mode === 'human':
-  // - Message is saved to history (done above) so staff can view it.
-  // - DO NOT schedule debounce.
-  // - DO NOT call Gemini.
-  // - DO NOT send any outbound WhatsApp message via YCloud.
-  // - Clear any existing pending debounce timer.
-  // - Mark the webhook event as processed and exit immediately.
+  // - Inspect the timestamp of the last message sent by staff/admin (outbound).
+  // - If more than 12 hours have passed since the last staff message (or no staff message exists),
+  //   automatically update the conversation record in Supabase to mode = 'bot'.
+  // - Log this auto-reset event and allow the AI agent to answer the student's new inquiry.
+  // - Otherwise, keep the bot silenced and exit.
   if (mode === "human") {
-    const pending = debounceQueue.get(phoneKey);
-    if (pending) {
-      clearTimeout(pending.timer);
-      debounceQueue.delete(phoneKey);
+    const [lastStaffMessage] = await db
+      .select({ createdAt: conversationMessagesTable.createdAt })
+      .from(conversationMessagesTable)
+      .where(
+        and(
+          eq(conversationMessagesTable.phoneNumber, phoneNumber),
+          eq(conversationMessagesTable.direction, "outbound"),
+        ),
+      )
+      .orderBy(desc(conversationMessagesTable.createdAt))
+      .limit(1);
+
+    const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
+    const timeSinceLastStaff = lastStaffMessage
+      ? Date.now() - lastStaffMessage.createdAt.getTime()
+      : Infinity;
+
+    if (timeSinceLastStaff > TWELVE_HOURS_MS) {
+      await db
+        .update(conversationsTable)
+        .set({ mode: "bot" })
+        .where(eq(conversationsTable.phoneNumber, phoneNumber));
+
+      logger.info(
+        {
+          phone: phoneNumber,
+          eventId: event.providerEventId,
+          lastStaffMessageAt: lastStaffMessage?.createdAt ?? null,
+          hoursElapsed: timeSinceLastStaff === Infinity ? "never" : (timeSinceLastStaff / (3600 * 1000)).toFixed(1),
+        },
+        "Auto-reset conversation mode from 'human' to 'bot' after >12 hours inactivity",
+      );
+    } else {
+      const pending = debounceQueue.get(phoneKey);
+      if (pending) {
+        clearTimeout(pending.timer);
+        debounceQueue.delete(phoneKey);
+      }
+      logger.info(
+        {
+          eventId: event.providerEventId,
+          phone: phoneNumber,
+          lastStaffMessageAt: lastStaffMessage?.createdAt,
+        },
+        "Conversation is in human mode (<12h since staff message); message saved, bot strictly silenced",
+      );
+      return;
     }
-    logger.info(
-      { eventId: event.providerEventId, phone: phoneNumber },
-      "Conversation is in human mode; message saved, bot strictly silenced",
-    );
-    return;
   }
 
   // Media / Audio / Document / Sticker: Discard from AI pipeline to prevent crashes, memory exhaustion and API fees.
@@ -311,6 +351,9 @@ async function processInbound(event: WebhookEvent): Promise<void> {
     providerMessageId: inbound.providerMessageId,
     lastMessageDbId: savedInbound.id,
   });
+
+  // Display WhatsApp typing indicator immediately upon debouncing
+  void sendWhatsAppTyping(phoneNumber, inbound.providerMessageId).catch(() => {});
 }
 
 async function claimNextEvent(): Promise<WebhookEvent | undefined> {

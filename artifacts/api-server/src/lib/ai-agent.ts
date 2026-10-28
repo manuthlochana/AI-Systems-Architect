@@ -9,15 +9,16 @@ import {
   type FunctionDeclaration,
   type Part,
 } from "@google/genai";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, or, sql } from "drizzle-orm";
 import {
   conversationMessagesTable,
   conversationsTable,
   db,
+  dynamicContentTable,
   tuteDeliveriesTable,
 } from "@workspace/db";
 import { logger } from "./logger";
-import { toPhoneKey } from "./spreadsheet";
+import { sanitizePhone9Digits } from "./spreadsheet";
 
 interface AssistantContext {
   phoneNumber: string;
@@ -34,6 +35,10 @@ const KNOWLEDGE_BASE_PATHS = [
   path.resolve(process.cwd(), "src/knowledge-base.md"),
 ];
 
+let cachedKnowledgeBase: string | null = null;
+let lastKbReadTime = 0;
+const KB_CACHE_TTL_MS = 60_000;
+
 export function getKnowledgeBasePath(): string {
   for (const candidate of KNOWLEDGE_BASE_PATHS) {
     if (fs.existsSync(candidate)) return candidate;
@@ -41,24 +46,32 @@ export function getKnowledgeBasePath(): string {
   return KNOWLEDGE_BASE_PATHS[0];
 }
 
-export function readKnowledgeBase(): string {
+export function readKnowledgeBase(forceReload = false): string {
+  const now = Date.now();
+  if (!forceReload && cachedKnowledgeBase && now - lastKbReadTime < KB_CACHE_TTL_MS) {
+    return cachedKnowledgeBase;
+  }
   try {
     const kbPath = getKnowledgeBasePath();
     if (fs.existsSync(kbPath)) {
-      return fs.readFileSync(kbPath, "utf8");
+      cachedKnowledgeBase = fs.readFileSync(kbPath, "utf8");
+      lastKbReadTime = now;
+      return cachedKnowledgeBase;
     }
   } catch (err) {
     logger.warn({ err }, "Could not read knowledge-base.md, using fallback");
   }
-  return `# Suranga Gamage A/L Media
-Official Hotline: 071 016 1699
-Technical Support: 078 909 4047
-Website: mediasuranga.lk`;
+  return (
+    cachedKnowledgeBase ||
+    `# Suranga Gamage A/L Media\nOfficial Hotline: 071 016 1699\nTechnical Support: 078 909 4047\nWebsite: mediasuranga.lk`
+  );
 }
 
 export function writeKnowledgeBase(content: string): void {
   const targetPath = getKnowledgeBasePath();
   fs.writeFileSync(targetPath, content, "utf8");
+  cachedKnowledgeBase = content;
+  lastKbReadTime = Date.now();
   // Also sync across candidate locations if they exist
   for (const candidate of KNOWLEDGE_BASE_PATHS) {
     try {
@@ -69,20 +82,84 @@ export function writeKnowledgeBase(content: string): void {
   }
 }
 
-export function buildSystemInstruction(): string {
+export async function fetchDynamicAnnouncements(): Promise<string> {
+  try {
+    const items = await db
+      .select()
+      .from(dynamicContentTable)
+      .orderBy(desc(dynamicContentTable.updatedAt));
+
+    if (!items.length) return "";
+
+    const formatted = items
+      .map(
+        (item) =>
+          `📌 [${item.category.toUpperCase()}] **${item.title}**\n${item.content.trim()}`,
+      )
+      .join("\n\n");
+
+    return `## 🚨 LATEST OFFICIAL ANNOUNCEMENTS & LIVE UPDATES (TOP PRIORITY)
+These active announcements were published directly by class management and take strict precedence over any older or conflicting static guidelines:
+
+${formatted}
+`;
+  } catch (err) {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Could not load dynamic content from database",
+    );
+    return "";
+  }
+}
+
+export async function buildSystemInstruction(): Promise<string> {
+  const dynamicAnnouncements = await fetchDynamicAnnouncements();
   const kb = readKnowledgeBase();
-  return `${kb}
+
+  const knowledgeSection = dynamicAnnouncements
+    ? `${dynamicAnnouncements}\n\n---\n\n${kb}`
+    : kb;
+
+  return `${knowledgeSection}
 
 ---
-CRITICAL OPERATIONAL INSTRUCTIONS:
-1. Persona & Tone: You are the official, polite Sinhala-speaking Academic Coordinator for Suranga Gamage's A/L Media classes at mediasuranga.lk. Always speak warmly and respectfully in Sinhala ("ආයුබෝවන් පුතේ", "ස්තූතියි පුතේ"). Never act as a generic AI chatbot.
-2. Short-Term Memory Context: Always maintain the context of the recent messages above. If the student asks a follow-up question (e.g. 'හෙටත් එහෙමද?', 'කීයටද?', 'ගාස්තුව කීයද?'), refer directly to the previously discussed topic.
-3. Zero-Database Knowledge Direct Answers: For all general questions regarding timetables, class schedules, fees, night classes, Zoom rules, website registration on mediasuranga.lk, and recording access rules, ANSWER DIRECTLY AND EXCLUSIVELY from the Knowledge Base above with NO tool calls or database queries.
-4. Tute Delivery Tool Usage: Call 'check_tute_delivery' ONLY when the student explicitly inquires about tute/book delivery dispatch, parcel arrival, or tracking numbers.
-   - If records are found, report the items, delivery waves, and postal tracking numbers clearly.
-   - If no records are found or found is false, provide a polite Sinhala notice explaining that no record was found for this phone number, and direct them to contact the office on 071 016 1699.
-5. Zoom & Recording Safety: Never generate, invent, or share Zoom links or passwords directly. Class sessions and recordings are accessed strictly through mediasuranga.lk after payment approval.
-6. Multi-message Bursts: Several short student messages may arrive together (e.g., "Hi", "Sir", "2027 timetable"). Treat them as a single consolidated inquiry and respond once.`;
+CRITICAL OPERATIONAL & PERSONA INSTRUCTIONS:
+1. Warm, Respectful Persona & Tone:
+   - You are the caring, authentic, and professional Academic Coordinator for Suranga Gamage Sir's A/L Media classes at mediasuranga.lk.
+   - Speak in natural, warm, and polite Sri Lankan Sinhala.
+   - Address the student lovingly and respectfully as "පුතේ" or "දුවේ" (e.g., "ආයුබෝවන් පුතේ ✨", "තෙරුවන් සරණයි පුතේ 🌸", "ස්තූතියි පුතේ").
+   - Never sound like an artificial robot or generic chatbot. Be genuinely helpful, supportive, and motivating.
+   - If a student speaks in English, answer politely in English or Sinhala with the same caring tone.
+
+2. Contextual Emoji Tone:
+   - Use emojis naturally and contextually to make messages feel warm, engaging, and alive:
+     📚 for study notes, tutes, model papers, and syllabus books.
+     🎥 for Zoom live classes, portal streams, and approved recordings.
+     📦🚚 for tute deliveries, postal dispatches, and parcel tracking.
+     🗓️ for timetables, class schedules, and dates.
+     ✨🌸 for warm greetings, appreciation, and encouraging blessings.
+     💡 for useful study tips, instructions, and exam guidance.
+     📞 for hotlines and coordinator contacts.
+   - Never spam emojis excessively (1 to 3 emojis per message where appropriate is ideal).
+
+3. Strict Guardrails:
+   - The bot exists STRICTLY for Suranga Gamage's A/L Media classes, admissions, timetables, tute parcels, website access, and A/L Media studies.
+   - If a student asks questions about politics, other tuition teachers, general technology, gossip, or personal matters, politely redirect them back to class topics and A/L Media studies:
+     "පුතේ, මම සුරංග ගමගේ සර්ගේ A/L Media පන්ති සම්බන්ධීකාරක. මට ඔබට උදව් කළ හැක්කේ අපගේ Media පන්තිය, කාලසටහන්, ටියුට් සහ විෂය කරුණු සම්බන්ධයෙන් පමණයි. 📚✨ පන්තියට අදාළව ඔබට ඇති ගැටලුව කුමක්දැයි පවසන්න."
+
+4. Zero-Database Direct FAQ Answers:
+   - For all general questions regarding timetables, class schedules, fees, night classes, Zoom rules, website registration on mediasuranga.lk, and recording access rules, ANSWER DIRECTLY AND EXCLUSIVELY from the Knowledge Base and Announcements above with ZERO database queries.
+
+5. Tute Delivery Tool Usage ('check_tute_delivery'):
+   - Call 'check_tute_delivery' ONLY when the student explicitly inquires about their tute dispatch, postal delivery, parcel tracking, or book dispatch.
+   - When records are found: Report delivery status, tracking number, courier service name (e.g., Sri Lanka Post / PromptX), dispatched date, and a polite reminder to check with their local post office/courier using the tracking number (📦🚚).
+   - When no record is found: Clearly inform them that the delivery for this phone number has not yet been logged for the current month, and guide them to send their payment slip/address to the class coordinator (071 016 1699).
+
+6. Zoom & Recording Safety:
+   - Never generate, invent, or share Zoom links or passwords directly. Class sessions and recordings are accessed strictly through mediasuranga.lk after payment approval.
+
+7. Multi-message Bursts:
+   - Several short student messages may arrive together within seconds. Treat them as a single consolidated inquiry and respond once clearly.`;
 }
 
 const FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
@@ -110,14 +187,39 @@ function stringArg(args: Record<string, unknown>, key: string, maxLength = 300):
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
 }
 
+function detectCourierService(trackingNumber: string): string {
+  const clean = trackingNumber.trim().toUpperCase();
+  if (
+    clean.endsWith("LK") ||
+    clean.startsWith("CP") ||
+    clean.startsWith("PO") ||
+    clean.startsWith("SLP")
+  ) {
+    return "Sri Lanka Post (ලංකා තැපැල් සේවය)";
+  }
+  if (clean.includes("PRX") || clean.includes("PROMPT") || clean.startsWith("PX")) {
+    return "PromptX Courier";
+  }
+  if (clean.startsWith("DMX") || clean.includes("DOMEX")) {
+    return "Domex Courier";
+  }
+  if (clean.startsWith("KMB") || clean.includes("KOOMBIYO")) {
+    return "Koombiyo Delivery";
+  }
+  return "Sri Lanka Post / Registered Courier (ලියාපදිංචි තැපැල්)";
+}
+
 async function checkDelivery(context: AssistantContext, args: Record<string, unknown>) {
   // Always the sender's own records; lookups use the uniform 9-digit phone key.
-  const phoneKey = toPhoneKey(context.phoneNumber);
+  const phoneKey = sanitizePhone9Digits(context.phoneNumber);
   const requestedMonth = stringArg(args, "month", 7);
   const explicitMonth = /^\d{4}-\d{2}$/.test(requestedMonth) ? requestedMonth : null;
   const wave = stringArg(args, "delivery_wave", 20);
   const itemType = stringArg(args, "item_type", 40);
-  const phoneMatch = sql`right(regexp_replace(${tuteDeliveriesTable.phoneNumber}, '\\D', '', 'g'), 9) = ${phoneKey}`;
+  const phoneMatch = or(
+    eq(tuteDeliveriesTable.phoneNumber, phoneKey),
+    sql`right(regexp_replace(${tuteDeliveriesTable.phoneNumber}, '\\D', '', 'g'), 9) = ${phoneKey}`,
+  );
   const filters = [
     phoneMatch,
     ...(wave ? [eq(tuteDeliveriesTable.deliveryWave, wave)] : []),
@@ -154,7 +256,7 @@ async function checkDelivery(context: AssistantContext, args: Record<string, unk
       found: false,
       month,
       message:
-        "No delivery record was found for this phone number. Ask the student to contact the office on 071 016 1699.",
+        "මෙම දුරකථන අංකය සඳහා මෙම මාසයේ ටියුට් බෙදාහැරීමක් මෙතෙක් වාර්තා වී නොමැත. ඔබ පන්ති ගාස්තු ගෙවා ඇත්නම්, කරුණාකර ඔබගේ ගෙවීම් රිසිට්පත (Payment Slip) සහ නිවැරදි ලිපිනය පන්ති සම්බන්ධීකාරක (071 016 1699) වෙත WhatsApp මඟින් යොමු කරන්න.",
     };
   }
 
@@ -165,8 +267,12 @@ async function checkDelivery(context: AssistantContext, args: Record<string, unk
       itemType: row.itemType,
       deliveryWave: row.deliveryWave,
       trackingNumber: row.trackingNumber,
-      status: row.status,
+      courierService: detectCourierService(row.trackingNumber),
+      deliveryStatus: row.status,
+      dispatchedDate: row.createdAt ? new Date(row.createdAt).toLocaleDateString("en-CA") : "Dispatched",
       address: row.address,
+      reminder:
+        "කරුණාකර ඔබගේ ළඟම ඇති තැපැල් කාර්යාලයෙන් හෝ බෙදාහැරීමේ සේවාවෙන් මෙම ලුහුබැඳීමේ අංකය (Tracking Number) ඉදිරිපත් කර විමසන්න.",
     })),
   };
 }
@@ -257,7 +363,7 @@ export async function generateStudentReply(
   }
 
   const client = new GoogleGenAI({ apiKey });
-  const systemInstruction = buildSystemInstruction();
+  const systemInstruction = await buildSystemInstruction();
 
   let response = await generateContentWithFallback(client, {
     contents,

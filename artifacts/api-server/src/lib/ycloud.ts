@@ -54,3 +54,53 @@ export async function sendYCloudText(
     return null;
   }
 }
+
+/**
+ * Dispatches a WhatsApp typing status indicator while the AI model is thinking.
+ * Fire-and-forget: Catches all errors internally so it never blocks or interrupts the AI execution thread.
+ */
+export async function sendWhatsAppTyping(
+  to: string,
+  inboundMessageId?: string | null,
+): Promise<void> {
+  const apiKey = process.env.YCLOUD_API_KEY;
+  if (!apiKey) return;
+
+  try {
+    const promises: Promise<unknown>[] = [];
+
+    // Official YCloud WhatsApp inbound messages typing endpoint (marks as read + displays typing)
+    if (inboundMessageId) {
+      promises.push(
+        fetch(
+          `https://api.ycloud.com/v2/whatsapp/inboundMessages/${encodeURIComponent(inboundMessageId)}/typing`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-API-Key": apiKey,
+            },
+            signal: AbortSignal.timeout(5_000),
+          },
+        ).catch(() => {}),
+      );
+    }
+
+    // Direct WhatsApp action endpoint
+    promises.push(
+      fetch("https://api.ycloud.com/v2/whatsapp/messages/action", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": apiKey,
+        },
+        body: JSON.stringify({ to, action: "typing" }),
+        signal: AbortSignal.timeout(5_000),
+      }).catch(() => {}),
+    );
+
+    await Promise.allSettled(promises);
+  } catch {
+    // Non-blocking fire-and-forget
+  }
+}

@@ -81,25 +81,33 @@ export function normalizePhoneNumber(value: string): string {
 }
 
 /**
- * Uniform 9-digit lookup key for Sri Lankan numbers. Handles `+9478XXXXXXX`,
- * `078XXXXXXX`, `94 78-XXX-XXXX` and similar mixed formats by keeping only the
- * last 9 digits. Used for tute delivery storage/lookups and rate limiting.
+ * Canonical phone sanitizer: Strips all non-digit characters and extracts strictly the last 9 digits.
+ * e.g., '+94 77 123 4567', '0771234567', '94771234567', '771234567.0' -> '771234567'
  */
-export function toPhoneKey(value: string): string {
-  const cleaned = String(value ?? "").trim().replace(/\.0+$/, "");
-  const digits = cleaned.replace(/\D/g, "");
+export function sanitizePhone9Digits(value: string | number | null | undefined): string {
+  if (value === null || value === undefined) {
+    throw new Error("Phone number is required");
+  }
+  const str = String(value).trim().replace(/\.0+$/, "");
+  const digits = str.replace(/\D/g, "");
   const match = /(\d{9})$/.exec(digits);
-  if (!match) throw new Error("Phone number must contain at least 9 digits");
+  if (!match) {
+    throw new Error(`Phone number "${value}" must contain at least 9 digits`);
+  }
   return match[1];
 }
 
-export function tryPhoneKey(value: string): string | null {
+export function trySanitizePhone9Digits(value: string | number | null | undefined): string | null {
   try {
-    return toPhoneKey(value);
+    return sanitizePhone9Digits(value);
   } catch {
     return null;
   }
 }
+
+// Aliases for backwards compatibility
+export const toPhoneKey = sanitizePhone9Digits;
+export const tryPhoneKey = trySanitizePhone9Digits;
 
 export function deliveryColumnMapFromHeaders(columns: string[]): TuteDeliveryColumnMap {
   const normalized = new Map(columns.map((column) => [column.toLowerCase().replace(/[^a-z0-9]/g, ""), column]));
