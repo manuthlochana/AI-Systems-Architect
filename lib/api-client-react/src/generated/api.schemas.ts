@@ -326,6 +326,35 @@ export interface WebhookAcknowledgement {
   accepted: boolean;
 }
 
+export type SuggestedKnowledgeItemStatus = typeof SuggestedKnowledgeItemStatus[keyof typeof SuggestedKnowledgeItemStatus];
+
+
+export const SuggestedKnowledgeItemStatus = {
+  pending: 'pending',
+  approved: 'approved',
+  rejected: 'rejected',
+} as const;
+
+export interface SuggestedKnowledgeItem {
+  id: string;
+  /** @nullable */
+  sourceConversationId?: string | null;
+  studentQuestion: string;
+  humanStaffResponse: string;
+  suggestedCategory: string;
+  status: SuggestedKnowledgeItemStatus;
+  createdAt: string;
+}
+
+export interface UpdateSuggestedKnowledgeInput {
+  /** @minLength 1 */
+  studentQuestion?: string;
+  /** @minLength 1 */
+  humanStaffResponse?: string;
+  /** @minLength 1 */
+  suggestedCategory?: string;
+}
+
 export type GetConversationsParams = {
 mode?: GetConversationsMode;
 /**
@@ -350,6 +379,20 @@ export type GetDeliveriesParams = {
  */
 month: string;
 };
+
+export type GetSuggestedKnowledgeItemsParams = {
+status?: GetSuggestedKnowledgeItemsStatus;
+};
+
+export type GetSuggestedKnowledgeItemsStatus = typeof GetSuggestedKnowledgeItemsStatus[keyof typeof GetSuggestedKnowledgeItemsStatus];
+
+
+export const GetSuggestedKnowledgeItemsStatus = {
+  pending: 'pending',
+  approved: 'approved',
+  rejected: 'rejected',
+  all: 'all',
+} as const;
 
 export type GetRecordingRequestsParams = {
 status?: GetRecordingRequestsStatus;

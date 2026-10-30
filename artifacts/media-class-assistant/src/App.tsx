@@ -4,13 +4,17 @@ import {
   Activity, ArrowUpRight, BookOpen, Check, ChevronDown,
   CircleAlert, Copy, FileSpreadsheet, KeyRound, LogOut, MessageCircle,
   RefreshCw, ShieldCheck, Terminal, Upload, Users, Bot,
+  Sparkles, Edit3, Trash2, CheckCircle2, XCircle,
 } from 'lucide-react';
 import {
   getGetAdminStatusQueryKey, getGetConversationsQueryKey,
-  getGetDeliveriesQueryKey,
+  getGetDeliveriesQueryKey, getGetSuggestedKnowledgeItemsQueryKey,
   useCreateAdminSession, useDeleteAdminSession,
   useGetAdminStatus, useGetConversations, useGetDeliveries,
   useImportTuteDeliveries, useInspectTuteDeliveryFile,
+  useGetSuggestedKnowledgeItems, useUpdateSuggestedKnowledgeItem,
+  useDeleteSuggestedKnowledgeItem, useApproveSuggestedKnowledgeItem,
+  useRejectSuggestedKnowledgeItem,
 } from '@workspace/api-client-react';
 
 const queryClient = new QueryClient({
@@ -19,7 +23,7 @@ const queryClient = new QueryClient({
 
 const DELIVERY_WAVES = ['Wave 1', 'Wave 2', 'Wave 3', 'Wave 4'] as const;
 const ITEM_TYPES = ['Monthly Tute', 'Special Book'] as const;
-type TabType = 'handoffs' | 'knowledge' | 'deliveries' | 'health';
+type TabType = 'handoffs' | 'knowledge' | 'suggestions' | 'deliveries' | 'health';
 
 const now = new Date();
 const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -175,6 +179,84 @@ function AppContent() {
       terminalBottomRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [logsQuery.data, activeTab]);
+
+  // Suggestions State
+  const [suggestionStatusFilter, setSuggestionStatusFilter] = useState<'pending' | 'approved' | 'rejected' | 'all'>('pending');
+  const [editingSuggestionId, setEditingSuggestionId] = useState<string | null>(null);
+  const [editQuestion, setEditQuestion] = useState('');
+  const [editResponse, setEditResponse] = useState('');
+  const [editCategory, setEditCategory] = useState('faq');
+
+  const suggestionsQuery = useGetSuggestedKnowledgeItems(
+    { status: suggestionStatusFilter },
+    {
+      query: {
+        enabled: authenticated,
+        queryKey: getGetSuggestedKnowledgeItemsQueryKey({ status: suggestionStatusFilter }),
+        refetchInterval: 10_000,
+      },
+      request: { credentials: 'include' },
+    }
+  );
+
+  const pendingSuggestionsQuery = useGetSuggestedKnowledgeItems(
+    { status: 'pending' },
+    {
+      query: {
+        enabled: authenticated,
+        queryKey: getGetSuggestedKnowledgeItemsQueryKey({ status: 'pending' }),
+        refetchInterval: 10_000,
+      },
+      request: { credentials: 'include' },
+    }
+  );
+  const pendingSuggestionsCount = pendingSuggestionsQuery.data?.length ?? 0;
+
+  const approveSuggestionMutation = useApproveSuggestedKnowledgeItem({
+    request: { credentials: 'include' },
+    mutation: {
+      onSuccess: () => {
+        setNotice('Suggestion approved and added to dynamic Knowledge Base FAQ! 🌸');
+        void client.invalidateQueries({ queryKey: getGetSuggestedKnowledgeItemsQueryKey() });
+        void client.invalidateQueries({ queryKey: ['admin-knowledge'] });
+      },
+      onError: (err) => setNotice(`Failed to approve suggestion: ${errorText(err)}`),
+    },
+  });
+
+  const rejectSuggestionMutation = useRejectSuggestedKnowledgeItem({
+    request: { credentials: 'include' },
+    mutation: {
+      onSuccess: () => {
+        setNotice('Suggestion marked as rejected.');
+        void client.invalidateQueries({ queryKey: getGetSuggestedKnowledgeItemsQueryKey() });
+      },
+      onError: (err) => setNotice(`Failed to reject suggestion: ${errorText(err)}`),
+    },
+  });
+
+  const deleteSuggestionMutation = useDeleteSuggestedKnowledgeItem({
+    request: { credentials: 'include' },
+    mutation: {
+      onSuccess: () => {
+        setNotice('Suggestion removed.');
+        void client.invalidateQueries({ queryKey: getGetSuggestedKnowledgeItemsQueryKey() });
+      },
+      onError: (err) => setNotice(`Failed to delete suggestion: ${errorText(err)}`),
+    },
+  });
+
+  const updateSuggestionMutation = useUpdateSuggestedKnowledgeItem({
+    request: { credentials: 'include' },
+    mutation: {
+      onSuccess: () => {
+        setNotice('Suggestion updated.');
+        setEditingSuggestionId(null);
+        void client.invalidateQueries({ queryKey: getGetSuggestedKnowledgeItemsQueryKey() });
+      },
+      onError: (err) => setNotice(`Failed to update suggestion: ${errorText(err)}`),
+    },
+  });
 
   // Derived state
   const conversations = conversationsQuery.data ?? [];
@@ -429,6 +511,23 @@ function AppContent() {
               </button>
 
               <button
+                onClick={() => setActiveTab('suggestions')}
+                className={`flex items-center gap-2 px-4 py-3 text-sm font-semibold border-b-2 transition-all whitespace-nowrap ${
+                  activeTab === 'suggestions'
+                    ? 'border-primary text-primary'
+                    : 'border-transparent text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                <Sparkles size={16} />
+                <span>AI Learning Suggestions</span>
+                {pendingSuggestionsCount > 0 && (
+                  <span className="px-2 py-0.5 rounded-full bg-primary/20 text-primary text-xs font-bold">
+                    {pendingSuggestionsCount}
+                  </span>
+                )}
+              </button>
+
+              <button
                 onClick={() => setActiveTab('deliveries')}
                 className={`flex items-center gap-2 px-4 py-3 text-sm font-semibold border-b-2 transition-all whitespace-nowrap ${
                   activeTab === 'deliveries'
@@ -594,6 +693,239 @@ function AppContent() {
                     {kbContent.length} chars · {kbContent.split('\n').length} lines
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* TAB: AI Learning Suggestions */}
+            {activeTab === 'suggestions' && (
+              <div className="bg-card border border-border rounded-2xl p-5 sm:p-6 shadow-sm space-y-6">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-border/60">
+                  <div>
+                    <h2 className="text-lg font-bold tracking-tight flex items-center gap-2">
+                      <Sparkles className="text-primary" size={19} />
+                      AI Learning Suggestions Queue
+                    </h2>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Staff responses to students in 1-on-1 chats are automatically captured here. Review, edit, and approve them into the Dynamic Knowledge Base (FAQ) for instant, safe AI learning.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {/* Status Filter Tabs */}
+                    <div className="flex p-1 bg-muted/60 rounded-xl border border-border/50 text-xs">
+                      {(['pending', 'approved', 'rejected', 'all'] as const).map((st) => (
+                        <button
+                          key={st}
+                          onClick={() => setSuggestionStatusFilter(st)}
+                          className={`px-3 py-1 rounded-lg capitalize font-medium transition-all ${
+                            suggestionStatusFilter === st
+                              ? 'bg-background text-foreground shadow-sm'
+                              : 'text-muted-foreground hover:text-foreground'
+                          }`}
+                        >
+                          {st === 'pending' ? `Pending (${pendingSuggestionsCount})` : st}
+                        </button>
+                      ))}
+                    </div>
+
+                    <button
+                      onClick={() => void suggestionsQuery.refetch()}
+                      className="px-3 py-1.5 border border-border rounded-xl text-xs hover:bg-muted/60 transition-colors flex items-center gap-1.5"
+                    >
+                      <RefreshCw size={13} className={suggestionsQuery.isFetching ? 'animate-spin' : ''} />
+                      Refresh
+                    </button>
+                  </div>
+                </div>
+
+                {suggestionsQuery.isLoading ? (
+                  <div className="py-12 text-center text-sm text-muted-foreground flex flex-col items-center gap-2">
+                    <RefreshCw className="animate-spin text-primary" size={20} />
+                    <span>Loading suggested learning items...</span>
+                  </div>
+                ) : (suggestionsQuery.data ?? []).length === 0 ? (
+                  <div className="p-12 text-center border border-dashed border-border rounded-2xl bg-muted/10 space-y-2">
+                    <Sparkles className="mx-auto text-muted-foreground/60" size={32} />
+                    <p className="text-sm font-semibold">No suggestions found in this view</p>
+                    <p className="text-xs text-muted-foreground max-w-md mx-auto">
+                      When staff members reply to students whose chats were handed off, question-and-answer pairs will be captured here for your approval.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {(suggestionsQuery.data ?? []).map((item) => {
+                      const isEditing = editingSuggestionId === item.id;
+                      return (
+                        <div
+                          key={item.id}
+                          className="p-4 sm:p-5 border border-border rounded-2xl bg-background/50 hover:border-border/90 transition-all space-y-4"
+                        >
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-border/40">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-mono text-xs font-bold text-foreground">
+                                {item.sourceConversationId || 'WhatsApp Chat'}
+                              </span>
+                              <span className="text-[11px] text-muted-foreground">
+                                · {dateLabel(item.createdAt)}
+                              </span>
+                              <span
+                                className={`text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full ${
+                                  item.status === 'approved'
+                                    ? 'bg-emerald-500/15 text-emerald-500 border border-emerald-500/20'
+                                    : item.status === 'rejected'
+                                      ? 'bg-muted text-muted-foreground border border-border'
+                                      : 'bg-amber-500/15 text-amber-500 border border-amber-500/20'
+                                }`}
+                              >
+                                {item.status}
+                              </span>
+                              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
+                                {item.suggestedCategory}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              {!isEditing && item.status === 'pending' && (
+                                <>
+                                  <button
+                                    onClick={() => {
+                                      setEditingSuggestionId(item.id);
+                                      setEditQuestion(item.studentQuestion);
+                                      setEditResponse(item.humanStaffResponse);
+                                      setEditCategory(item.suggestedCategory);
+                                    }}
+                                    className="px-2.5 py-1 border border-border rounded-lg text-xs hover:bg-muted/60 transition-colors flex items-center gap-1"
+                                  >
+                                    <Edit3 size={12} />
+                                    Edit
+                                  </button>
+                                  <button
+                                    onClick={() => approveSuggestionMutation.mutate({ id: item.id })}
+                                    disabled={approveSuggestionMutation.isPending}
+                                    className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-lg text-xs transition-colors flex items-center gap-1 shadow-sm"
+                                  >
+                                    <CheckCircle2 size={13} />
+                                    Approve & Add to KB
+                                  </button>
+                                  <button
+                                    onClick={() => rejectSuggestionMutation.mutate({ id: item.id })}
+                                    disabled={rejectSuggestionMutation.isPending}
+                                    className="px-2.5 py-1 border border-border text-muted-foreground hover:text-foreground rounded-lg text-xs transition-colors flex items-center gap-1"
+                                  >
+                                    <XCircle size={13} />
+                                    Reject
+                                  </button>
+                                </>
+                              )}
+                              {!isEditing && item.status !== 'pending' && (
+                                <button
+                                  onClick={() => deleteSuggestionMutation.mutate({ id: item.id })}
+                                  disabled={deleteSuggestionMutation.isPending}
+                                  className="px-2.5 py-1 text-destructive hover:bg-destructive/10 rounded-lg text-xs transition-colors flex items-center gap-1"
+                                >
+                                  <Trash2 size={13} />
+                                  Delete
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          {isEditing ? (
+                            <div className="space-y-3 pt-1">
+                              <div>
+                                <label className="block text-xs font-semibold text-muted-foreground mb-1">
+                                  Student Question
+                                </label>
+                                <textarea
+                                  value={editQuestion}
+                                  onChange={(e) => setEditQuestion(e.target.value)}
+                                  rows={2}
+                                  className="w-full text-xs p-2.5 bg-background border border-border rounded-xl focus:ring-1 focus:ring-primary focus:outline-none"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="block text-xs font-semibold text-muted-foreground mb-1">
+                                  Human Staff Response (Will be committed as FAQ Answer)
+                                </label>
+                                <textarea
+                                  value={editResponse}
+                                  onChange={(e) => setEditResponse(e.target.value)}
+                                  rows={3}
+                                  className="w-full text-xs p-2.5 bg-background border border-border rounded-xl focus:ring-1 focus:ring-primary focus:outline-none"
+                                />
+                              </div>
+
+                              <div className="flex items-center justify-between pt-2">
+                                <div className="flex items-center gap-2">
+                                  <label className="text-xs text-muted-foreground font-semibold">Category:</label>
+                                  <select
+                                    value={editCategory}
+                                    onChange={(e) => setEditCategory(e.target.value)}
+                                    className="text-xs p-1.5 bg-background border border-border rounded-lg"
+                                  >
+                                    <option value="faq">FAQ</option>
+                                    <option value="timetable">Timetable</option>
+                                    <option value="pricing">Pricing</option>
+                                    <option value="general">General</option>
+                                    <option value="announcement">Announcement</option>
+                                  </select>
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    onClick={() => setEditingSuggestionId(null)}
+                                    className="px-3 py-1.5 border border-border rounded-xl text-xs hover:bg-muted/60 transition-colors"
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button
+                                    onClick={() =>
+                                      updateSuggestionMutation.mutate({
+                                        id: item.id,
+                                        data: {
+                                          studentQuestion: editQuestion,
+                                          humanStaffResponse: editResponse,
+                                          suggestedCategory: editCategory,
+                                        },
+                                      })
+                                    }
+                                    disabled={updateSuggestionMutation.isPending}
+                                    className="px-4 py-1.5 bg-primary text-primary-foreground font-semibold rounded-xl text-xs hover:opacity-90 transition-opacity"
+                                  >
+                                    Save Changes
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                              <div className="p-3 bg-muted/30 border border-border/60 rounded-xl space-y-1">
+                                <span className="font-semibold text-muted-foreground flex items-center gap-1 text-[11px]">
+                                  <Users size={12} className="text-amber-500" />
+                                  Student Inquiry:
+                                </span>
+                                <p className="text-foreground leading-relaxed whitespace-pre-wrap font-medium">
+                                  {item.studentQuestion}
+                                </p>
+                              </div>
+
+                              <div className="p-3 bg-primary/5 border border-primary/20 rounded-xl space-y-1">
+                                <span className="font-semibold text-primary flex items-center gap-1 text-[11px]">
+                                  <Bot size={12} className="text-primary" />
+                                  Staff Response:
+                                </span>
+                                <p className="text-foreground leading-relaxed whitespace-pre-wrap font-medium">
+                                  {item.humanStaffResponse}
+                                </p>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
 

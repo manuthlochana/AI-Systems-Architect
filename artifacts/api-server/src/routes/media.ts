@@ -27,6 +27,16 @@ import {
   UpsertDynamicContentParams,
   UpsertDynamicContentBody as DynamicContentBody,
   UpsertDynamicContentResponse,
+  GetSuggestedKnowledgeItemsQueryParams,
+  GetSuggestedKnowledgeItemsResponse,
+  UpdateSuggestedKnowledgeItemParams,
+  UpdateSuggestedKnowledgeItemBody,
+  UpdateSuggestedKnowledgeItemResponse,
+  DeleteSuggestedKnowledgeItemParams,
+  ApproveSuggestedKnowledgeItemParams,
+  ApproveSuggestedKnowledgeItemResponse,
+  RejectSuggestedKnowledgeItemParams,
+  RejectSuggestedKnowledgeItemResponse,
 } from "@workspace/api-zod";
 import {
   conversationMessagesTable,
@@ -34,6 +44,7 @@ import {
   db,
   dynamicContentTable,
   recordingRequestsTable,
+  suggestedKnowledgeItemsTable,
   tuteDeliveriesTable,
 } from "@workspace/db";
 import {
@@ -82,6 +93,18 @@ function serializeContent(row: typeof dynamicContentTable.$inferSelect) {
 
 function serializeRecordingRequest(row: typeof recordingRequestsTable.$inferSelect) {
   return { ...row, createdAt: row.createdAt.toISOString() };
+}
+
+function serializeSuggestion(row: typeof suggestedKnowledgeItemsTable.$inferSelect) {
+  return {
+    id: row.id,
+    sourceConversationId: row.sourceConversationId,
+    studentQuestion: row.studentQuestion,
+    humanStaffResponse: row.humanStaffResponse,
+    suggestedCategory: row.suggestedCategory,
+    status: row.status,
+    createdAt: row.createdAt.toISOString(),
+  };
 }
 
 function validateLoginRateLimit(ip: string): boolean {
@@ -592,6 +615,146 @@ router.delete("/content/:key", requireAdmin, async (req, res): Promise<void> => 
     return;
   }
   res.status(204).end();
+});
+
+router.get("/admin/suggestions", requireAdmin, async (req, res): Promise<void> => {
+  const query = GetSuggestedKnowledgeItemsQueryParams.safeParse(req.query);
+  if (!query.success) {
+    res.status(400).json({ error: query.error.message });
+    return;
+  }
+  const filter =
+    query.data.status === "all"
+      ? undefined
+      : eq(suggestedKnowledgeItemsTable.status, query.data.status);
+
+  const rows = await db
+    .select()
+    .from(suggestedKnowledgeItemsTable)
+    .where(filter)
+    .orderBy(desc(suggestedKnowledgeItemsTable.createdAt));
+
+  res.json(GetSuggestedKnowledgeItemsResponse.parse(rows.map(serializeSuggestion)));
+});
+
+router.patch("/admin/suggestions/:id", requireAdmin, async (req, res): Promise<void> => {
+  const params = UpdateSuggestedKnowledgeItemParams.safeParse(req.params);
+  const body = UpdateSuggestedKnowledgeItemBody.safeParse(req.body);
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  if (!body.success) {
+    res.status(400).json({ error: body.error.message });
+    return;
+  }
+
+  const [updated] = await db
+    .update(suggestedKnowledgeItemsTable)
+    .set({
+      ...(body.data.studentQuestion ? { studentQuestion: body.data.studentQuestion } : {}),
+      ...(body.data.humanStaffResponse ? { humanStaffResponse: body.data.humanStaffResponse } : {}),
+      ...(body.data.suggestedCategory ? { suggestedCategory: body.data.suggestedCategory } : {}),
+    })
+    .where(eq(suggestedKnowledgeItemsTable.id, params.data.id))
+    .returning();
+
+  if (!updated) {
+    res.status(404).json({ error: "Suggested item not found" });
+    return;
+  }
+
+  res.json(UpdateSuggestedKnowledgeItemResponse.parse(serializeSuggestion(updated)));
+});
+
+router.delete("/admin/suggestions/:id", requireAdmin, async (req, res): Promise<void> => {
+  const params = DeleteSuggestedKnowledgeItemParams.safeParse(req.params);
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+
+  const deleted = await db
+    .delete(suggestedKnowledgeItemsTable)
+    .where(eq(suggestedKnowledgeItemsTable.id, params.data.id))
+    .returning({ id: suggestedKnowledgeItemsTable.id });
+
+  if (!deleted.length) {
+    res.status(404).json({ error: "Suggested item not found" });
+    return;
+  }
+
+  res.status(204).end();
+});
+
+router.post("/admin/suggestions/:id/approve", requireAdmin, async (req, res): Promise<void> => {
+  const params = ApproveSuggestedKnowledgeItemParams.safeParse(req.params);
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+
+  const [item] = await db
+    .select()
+    .from(suggestedKnowledgeItemsTable)
+    .where(eq(suggestedKnowledgeItemsTable.id, params.data.id))
+    .limit(1);
+
+  if (!item) {
+    res.status(404).json({ error: "Suggested item not found" });
+    return;
+  }
+
+  await db
+    .update(suggestedKnowledgeItemsTable)
+    .set({ status: "approved" })
+    .where(eq(suggestedKnowledgeItemsTable.id, params.data.id));
+
+  const cleanKey = `faq_${item.id.replace(/-/g, "").slice(0, 16)}`;
+  const title = item.studentQuestion.slice(0, 100);
+  const content = `Q: ${item.studentQuestion}\nA: ${item.humanStaffResponse}`;
+
+  const [saved] = await db
+    .insert(dynamicContentTable)
+    .values({
+      key: cleanKey,
+      category: "faq",
+      title,
+      content,
+    })
+    .onConflictDoUpdate({
+      target: dynamicContentTable.key,
+      set: {
+        category: "faq",
+        title,
+        content,
+        updatedAt: new Date(),
+      },
+    })
+    .returning();
+
+  res.json(ApproveSuggestedKnowledgeItemResponse.parse(serializeContent(saved)));
+});
+
+router.post("/admin/suggestions/:id/reject", requireAdmin, async (req, res): Promise<void> => {
+  const params = RejectSuggestedKnowledgeItemParams.safeParse(req.params);
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+
+  const [updated] = await db
+    .update(suggestedKnowledgeItemsTable)
+    .set({ status: "rejected" })
+    .where(eq(suggestedKnowledgeItemsTable.id, params.data.id))
+    .returning();
+
+  if (!updated) {
+    res.status(404).json({ error: "Suggested item not found" });
+    return;
+  }
+
+  res.json(RejectSuggestedKnowledgeItemResponse.parse(serializeSuggestion(updated)));
 });
 
 router.get("/recording-requests", requireAdmin, async (req, res): Promise<void> => {

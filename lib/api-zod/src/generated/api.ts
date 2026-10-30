@@ -268,6 +268,100 @@ export const DeleteDynamicContentResponse = zod.void()
 
 
 /**
+ * @summary List suggested knowledge items captured from staff chats
+ */
+export const getSuggestedKnowledgeItemsQueryStatusDefault = `pending`;
+
+export const GetSuggestedKnowledgeItemsQueryParams = zod.object({
+  "status": zod.enum(['pending', 'approved', 'rejected', 'all']).default(getSuggestedKnowledgeItemsQueryStatusDefault)
+})
+
+export const GetSuggestedKnowledgeItemsResponseItem = zod.object({
+  "id": zod.string().uuid(),
+  "sourceConversationId": zod.string().nullish(),
+  "studentQuestion": zod.string(),
+  "humanStaffResponse": zod.string(),
+  "suggestedCategory": zod.string(),
+  "status": zod.enum(['pending', 'approved', 'rejected']),
+  "createdAt": zod.coerce.date()
+})
+export const GetSuggestedKnowledgeItemsResponse = zod.array(GetSuggestedKnowledgeItemsResponseItem)
+
+
+/**
+ * @summary Edit a suggested knowledge item before approval
+ */
+export const UpdateSuggestedKnowledgeItemParams = zod.object({
+  "id": zod.coerce.string().uuid()
+})
+
+
+
+
+
+
+export const UpdateSuggestedKnowledgeItemBody = zod.object({
+  "studentQuestion": zod.string().min(1).optional(),
+  "humanStaffResponse": zod.string().min(1).optional(),
+  "suggestedCategory": zod.string().min(1).optional()
+})
+
+export const UpdateSuggestedKnowledgeItemResponse = zod.object({
+  "id": zod.string().uuid(),
+  "sourceConversationId": zod.string().nullish(),
+  "studentQuestion": zod.string(),
+  "humanStaffResponse": zod.string(),
+  "suggestedCategory": zod.string(),
+  "status": zod.enum(['pending', 'approved', 'rejected']),
+  "createdAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary Discard a suggested knowledge item
+ */
+export const DeleteSuggestedKnowledgeItemParams = zod.object({
+  "id": zod.coerce.string().uuid()
+})
+
+export const DeleteSuggestedKnowledgeItemResponse = zod.void()
+
+
+/**
+ * @summary Approve a suggested item and commit it into dynamic knowledge base
+ */
+export const ApproveSuggestedKnowledgeItemParams = zod.object({
+  "id": zod.coerce.string().uuid()
+})
+
+export const ApproveSuggestedKnowledgeItemResponse = zod.object({
+  "key": zod.string(),
+  "category": zod.enum(['timetable', 'pricing', 'general', 'faq', 'announcement']),
+  "title": zod.string(),
+  "content": zod.string(),
+  "updatedAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary Reject a suggested knowledge item
+ */
+export const RejectSuggestedKnowledgeItemParams = zod.object({
+  "id": zod.coerce.string().uuid()
+})
+
+export const RejectSuggestedKnowledgeItemResponse = zod.object({
+  "id": zod.string().uuid(),
+  "sourceConversationId": zod.string().nullish(),
+  "studentQuestion": zod.string(),
+  "humanStaffResponse": zod.string(),
+  "suggestedCategory": zod.string(),
+  "status": zod.enum(['pending', 'approved', 'rejected']),
+  "createdAt": zod.coerce.date()
+})
+
+
+/**
  * @summary List recording access requests
  */
 export const getRecordingRequestsQueryStatusDefault = `pending`;

@@ -297,6 +297,132 @@ paths:
           description: Admin session required
         "404":
           description: Content entry not found
+  /admin/suggestions:
+    get:
+      operationId: getSuggestedKnowledgeItems
+      tags: [content]
+      summary: List suggested knowledge items captured from staff chats
+      security:
+        - AdminSession: []
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [pending, approved, rejected, all]
+            default: pending
+      responses:
+        "200":
+          description: Suggested knowledge items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SuggestedKnowledgeItem"
+        "401":
+          description: Admin session required
+  /admin/suggestions/{id}:
+    patch:
+      operationId: updateSuggestedKnowledgeItem
+      tags: [content]
+      summary: Edit a suggested knowledge item before approval
+      security:
+        - AdminSession: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSuggestedKnowledgeInput"
+      responses:
+        "200":
+          description: Updated suggested knowledge item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuggestedKnowledgeItem"
+        "401":
+          description: Admin session required
+        "404":
+          description: Suggested item not found
+    delete:
+      operationId: deleteSuggestedKnowledgeItem
+      tags: [content]
+      summary: Discard a suggested knowledge item
+      security:
+        - AdminSession: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Suggested item deleted
+        "401":
+          description: Admin session required
+        "404":
+          description: Suggested item not found
+  /admin/suggestions/{id}/approve:
+    post:
+      operationId: approveSuggestedKnowledgeItem
+      tags: [content]
+      summary: Approve a suggested item and commit it into dynamic knowledge base
+      security:
+        - AdminSession: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Approved and created dynamic content entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DynamicContent"
+        "401":
+          description: Admin session required
+        "404":
+          description: Suggested item not found
+  /admin/suggestions/{id}/reject:
+    post:
+      operationId: rejectSuggestedKnowledgeItem
+      tags: [content]
+      summary: Reject a suggested knowledge item
+      security:
+        - AdminSession: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Rejected suggested knowledge item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuggestedKnowledgeItem"
+        "401":
+          description: Admin session required
+        "404":
+          description: Suggested item not found
   /recording-requests:
     get:
       operationId: getRecordingRequests
@@ -565,4 +691,21 @@ components:
       properties:
         accepted: { type: boolean }
       required: [accepted]
+    SuggestedKnowledgeItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        sourceConversationId: { type: ["string", "null"] }
+        studentQuestion: { type: string }
+        humanStaffResponse: { type: string }
+        suggestedCategory: { type: string }
+        status: { type: string, enum: [pending, approved, rejected] }
+        createdAt: { type: string, format: date-time }
+      required: [id, studentQuestion, humanStaffResponse, suggestedCategory, status, createdAt]
+    UpdateSuggestedKnowledgeInput:
+      type: object
+      properties:
+        studentQuestion: { type: string, minLength: 1 }
+        humanStaffResponse: { type: string, minLength: 1 }
+        suggestedCategory: { type: string, minLength: 1 }
 

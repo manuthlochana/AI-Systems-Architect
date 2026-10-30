@@ -31,14 +31,17 @@ import type {
   GetConversationsParams,
   GetDeliveriesParams,
   GetRecordingRequestsParams,
+  GetSuggestedKnowledgeItemsParams,
   HealthStatus,
   RecordingApprovalInput,
   RecordingRequest,
+  SuggestedKnowledgeItem,
   TuteDelivery,
   TuteDeliveryFileInput,
   TuteDeliveryImportInput,
   TuteDeliveryImportResult,
   TuteDeliveryInspection,
+  UpdateSuggestedKnowledgeInput,
   WebhookAcknowledgement,
   WhatsAppWebhookInput
 } from './api.schemas';
@@ -1135,6 +1138,401 @@ export const useDeleteDynamicContent = <TError = ErrorType<void>,
         TContext
       > => {
       return useMutation(getDeleteDynamicContentMutationOptions(options));
+    }
+
+export const getGetSuggestedKnowledgeItemsUrl = (params?: GetSuggestedKnowledgeItemsParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/admin/suggestions?${stringifiedParams}` : `/api/admin/suggestions`
+}
+
+/**
+ * @summary List suggested knowledge items captured from staff chats
+ */
+export const getSuggestedKnowledgeItems = async (params?: GetSuggestedKnowledgeItemsParams, options?: Parameters<typeof customFetch>[1]): Promise<SuggestedKnowledgeItem[]> => {
+
+  return customFetch<SuggestedKnowledgeItem[]>(getGetSuggestedKnowledgeItemsUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetSuggestedKnowledgeItemsQueryKey = (params?: GetSuggestedKnowledgeItemsParams,) => {
+    return [
+    `/api/admin/suggestions`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getGetSuggestedKnowledgeItemsQueryOptions = <TData = Awaited<ReturnType<typeof getSuggestedKnowledgeItems>>, TError = ErrorType<void>>(params?: GetSuggestedKnowledgeItemsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getSuggestedKnowledgeItems>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetSuggestedKnowledgeItemsQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getSuggestedKnowledgeItems>>> = ({ signal }) => getSuggestedKnowledgeItems(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getSuggestedKnowledgeItems>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetSuggestedKnowledgeItemsQueryResult = NonNullable<Awaited<ReturnType<typeof getSuggestedKnowledgeItems>>>
+export type GetSuggestedKnowledgeItemsQueryError = ErrorType<void>
+
+
+/**
+ * @summary List suggested knowledge items captured from staff chats
+ */
+
+export function useGetSuggestedKnowledgeItems<TData = Awaited<ReturnType<typeof getSuggestedKnowledgeItems>>, TError = ErrorType<void>>(
+ params?: GetSuggestedKnowledgeItemsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getSuggestedKnowledgeItems>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetSuggestedKnowledgeItemsQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getUpdateSuggestedKnowledgeItemUrl = (id: string,) => {
+
+
+
+
+  return `/api/admin/suggestions/${id}`
+}
+
+/**
+ * @summary Edit a suggested knowledge item before approval
+ */
+export const updateSuggestedKnowledgeItem = async (id: string,
+    updateSuggestedKnowledgeInput: UpdateSuggestedKnowledgeInput, options?: Parameters<typeof customFetch>[1]): Promise<SuggestedKnowledgeItem> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<SuggestedKnowledgeItem>(getUpdateSuggestedKnowledgeItemUrl(id),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(updateSuggestedKnowledgeInput)
+  }
+);}
+
+
+
+
+
+export const getUpdateSuggestedKnowledgeItemMutationKey = () => ['updateSuggestedKnowledgeItem'] as const;
+
+export const getUpdateSuggestedKnowledgeItemMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateSuggestedKnowledgeItem>>, TError,UpdateSuggestedKnowledgeItemMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateSuggestedKnowledgeItem>>, TError,UpdateSuggestedKnowledgeItemMutationVariables, TContext> => {
+
+const mutationKey = getUpdateSuggestedKnowledgeItemMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateSuggestedKnowledgeItem>>, UpdateSuggestedKnowledgeItemMutationVariables> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  updateSuggestedKnowledgeItem(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateSuggestedKnowledgeItemMutationResult = NonNullable<Awaited<ReturnType<typeof updateSuggestedKnowledgeItem>>>
+    export type UpdateSuggestedKnowledgeItemMutationBody = BodyType<UpdateSuggestedKnowledgeInput>
+    export type UpdateSuggestedKnowledgeItemMutationError = ErrorType<void>
+    export type UpdateSuggestedKnowledgeItemMutationVariables = {id: string;data: BodyType<UpdateSuggestedKnowledgeInput>}
+
+    /**
+ * @summary Edit a suggested knowledge item before approval
+ */
+export const useUpdateSuggestedKnowledgeItem = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateSuggestedKnowledgeItem>>, TError,UpdateSuggestedKnowledgeItemMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateSuggestedKnowledgeItem>>,
+        TError,
+        UpdateSuggestedKnowledgeItemMutationVariables,
+        TContext
+      > => {
+      return useMutation(getUpdateSuggestedKnowledgeItemMutationOptions(options));
+    }
+
+export const getDeleteSuggestedKnowledgeItemUrl = (id: string,) => {
+
+
+
+
+  return `/api/admin/suggestions/${id}`
+}
+
+/**
+ * @summary Discard a suggested knowledge item
+ */
+export const deleteSuggestedKnowledgeItem = async (id: string, options?: Parameters<typeof customFetch>[1]): Promise<void> => {
+
+  return customFetch<void>(getDeleteSuggestedKnowledgeItemUrl(id),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+
+export const getDeleteSuggestedKnowledgeItemMutationKey = () => ['deleteSuggestedKnowledgeItem'] as const;
+
+export const getDeleteSuggestedKnowledgeItemMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteSuggestedKnowledgeItem>>, TError,DeleteSuggestedKnowledgeItemMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteSuggestedKnowledgeItem>>, TError,DeleteSuggestedKnowledgeItemMutationVariables, TContext> => {
+
+const mutationKey = getDeleteSuggestedKnowledgeItemMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteSuggestedKnowledgeItem>>, DeleteSuggestedKnowledgeItemMutationVariables> = (props) => {
+          const {id} = props ?? {};
+
+          return  deleteSuggestedKnowledgeItem(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteSuggestedKnowledgeItemMutationResult = NonNullable<Awaited<ReturnType<typeof deleteSuggestedKnowledgeItem>>>
+
+    export type DeleteSuggestedKnowledgeItemMutationError = ErrorType<void>
+    export type DeleteSuggestedKnowledgeItemMutationVariables = {id: string}
+
+    /**
+ * @summary Discard a suggested knowledge item
+ */
+export const useDeleteSuggestedKnowledgeItem = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteSuggestedKnowledgeItem>>, TError,DeleteSuggestedKnowledgeItemMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof deleteSuggestedKnowledgeItem>>,
+        TError,
+        DeleteSuggestedKnowledgeItemMutationVariables,
+        TContext
+      > => {
+      return useMutation(getDeleteSuggestedKnowledgeItemMutationOptions(options));
+    }
+
+export const getApproveSuggestedKnowledgeItemUrl = (id: string,) => {
+
+
+
+
+  return `/api/admin/suggestions/${id}/approve`
+}
+
+/**
+ * @summary Approve a suggested item and commit it into dynamic knowledge base
+ */
+export const approveSuggestedKnowledgeItem = async (id: string, options?: Parameters<typeof customFetch>[1]): Promise<DynamicContent> => {
+
+  return customFetch<DynamicContent>(getApproveSuggestedKnowledgeItemUrl(id),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+
+export const getApproveSuggestedKnowledgeItemMutationKey = () => ['approveSuggestedKnowledgeItem'] as const;
+
+export const getApproveSuggestedKnowledgeItemMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof approveSuggestedKnowledgeItem>>, TError,ApproveSuggestedKnowledgeItemMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof approveSuggestedKnowledgeItem>>, TError,ApproveSuggestedKnowledgeItemMutationVariables, TContext> => {
+
+const mutationKey = getApproveSuggestedKnowledgeItemMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof approveSuggestedKnowledgeItem>>, ApproveSuggestedKnowledgeItemMutationVariables> = (props) => {
+          const {id} = props ?? {};
+
+          return  approveSuggestedKnowledgeItem(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ApproveSuggestedKnowledgeItemMutationResult = NonNullable<Awaited<ReturnType<typeof approveSuggestedKnowledgeItem>>>
+
+    export type ApproveSuggestedKnowledgeItemMutationError = ErrorType<void>
+    export type ApproveSuggestedKnowledgeItemMutationVariables = {id: string}
+
+    /**
+ * @summary Approve a suggested item and commit it into dynamic knowledge base
+ */
+export const useApproveSuggestedKnowledgeItem = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof approveSuggestedKnowledgeItem>>, TError,ApproveSuggestedKnowledgeItemMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof approveSuggestedKnowledgeItem>>,
+        TError,
+        ApproveSuggestedKnowledgeItemMutationVariables,
+        TContext
+      > => {
+      return useMutation(getApproveSuggestedKnowledgeItemMutationOptions(options));
+    }
+
+export const getRejectSuggestedKnowledgeItemUrl = (id: string,) => {
+
+
+
+
+  return `/api/admin/suggestions/${id}/reject`
+}
+
+/**
+ * @summary Reject a suggested knowledge item
+ */
+export const rejectSuggestedKnowledgeItem = async (id: string, options?: Parameters<typeof customFetch>[1]): Promise<SuggestedKnowledgeItem> => {
+
+  return customFetch<SuggestedKnowledgeItem>(getRejectSuggestedKnowledgeItemUrl(id),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+
+export const getRejectSuggestedKnowledgeItemMutationKey = () => ['rejectSuggestedKnowledgeItem'] as const;
+
+export const getRejectSuggestedKnowledgeItemMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof rejectSuggestedKnowledgeItem>>, TError,RejectSuggestedKnowledgeItemMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof rejectSuggestedKnowledgeItem>>, TError,RejectSuggestedKnowledgeItemMutationVariables, TContext> => {
+
+const mutationKey = getRejectSuggestedKnowledgeItemMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof rejectSuggestedKnowledgeItem>>, RejectSuggestedKnowledgeItemMutationVariables> = (props) => {
+          const {id} = props ?? {};
+
+          return  rejectSuggestedKnowledgeItem(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type RejectSuggestedKnowledgeItemMutationResult = NonNullable<Awaited<ReturnType<typeof rejectSuggestedKnowledgeItem>>>
+
+    export type RejectSuggestedKnowledgeItemMutationError = ErrorType<void>
+    export type RejectSuggestedKnowledgeItemMutationVariables = {id: string}
+
+    /**
+ * @summary Reject a suggested knowledge item
+ */
+export const useRejectSuggestedKnowledgeItem = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof rejectSuggestedKnowledgeItem>>, TError,RejectSuggestedKnowledgeItemMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof rejectSuggestedKnowledgeItem>>,
+        TError,
+        RejectSuggestedKnowledgeItemMutationVariables,
+        TContext
+      > => {
+      return useMutation(getRejectSuggestedKnowledgeItemMutationOptions(options));
     }
 
 export const getGetRecordingRequestsUrl = (params?: GetRecordingRequestsParams,) => {

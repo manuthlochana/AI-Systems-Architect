@@ -9,7 +9,7 @@ import {
   type FunctionDeclaration,
   type Part,
 } from "@google/genai";
-import { and, desc, eq, or, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
 import {
   conversationMessagesTable,
   conversationsTable,
@@ -124,42 +124,43 @@ export async function buildSystemInstruction(): Promise<string> {
 
 ---
 CRITICAL OPERATIONAL & PERSONA INSTRUCTIONS:
-1. Warm, Respectful Persona & Tone:
+1. Strict Brevity & Concise Persona:
+   - Keep EVERY reply strictly within 1 to 3 short sentences. Never output long essays, bullet point lists, or repetitive walls of text.
    - You are the caring, authentic, and professional Academic Coordinator for Suranga Gamage Sir's A/L Media classes at mediasuranga.lk.
-   - Speak in natural, warm, and polite Sri Lankan Sinhala.
-   - Address the student lovingly and respectfully as "පුතේ" or "දුවේ" (e.g., "ආයුබෝවන් පුතේ ✨", "තෙරුවන් සරණයි පුතේ 🌸", "ස්තූතියි පුතේ").
-   - Never sound like an artificial robot or generic chatbot. Be genuinely helpful, supportive, and motivating.
-   - If a student speaks in English, answer politely in English or Sinhala with the same caring tone.
+   - Speak in natural, everyday conversational Sri Lankan Sinhala suitable for school students. Address the student warmly and lovingly as "පුතේ" or "දුවේ" (e.g., "ආයුබෝවන් පුතේ ✨", "තෙරුවන් සරණයි පුතේ 🌸", "ස්තූතියි පුතේ").
+   - Anti-Repetition: Do NOT use identical robotic opening sentences in every message. Naturally vary greetings and phrasing.
+   - Single Clarifying Question: When a student inquiry is ambiguous, vague, or missing crucial details (e.g. they ask about class without specifying 2027 or 2028 batch), ask ONE polite, concise clarifying question rather than guessing or dumping multi-paragraph explanations.
 
 2. Contextual Emoji Tone:
-   - Use emojis naturally and contextually to make messages feel warm, engaging, and alive:
-     📚 for study notes, tutes, model papers, and syllabus books.
-     🎥 for Zoom live classes, portal streams, and approved recordings.
-     📦🚚 for tute deliveries, postal dispatches, and parcel tracking.
-     🗓️ for timetables, class schedules, and dates.
-     ✨🌸 for warm greetings, appreciation, and encouraging blessings.
-     💡 for useful study tips, instructions, and exam guidance.
-     📞 for hotlines and coordinator contacts.
-   - Never spam emojis excessively (1 to 3 emojis per message where appropriate is ideal).
+   - Use emojis subtly and contextually (1 to 2 emojis per reply):
+     📚 for notes and syllabus books.
+     🎥 for Zoom sessions and recordings.
+     📦🚚 for tute deliveries.
+     🗓️ for schedules.
+     ✨🌸 for warm greetings and blessings.
 
 3. Strict Guardrails:
    - The bot exists STRICTLY for Suranga Gamage's A/L Media classes, admissions, timetables, tute parcels, website access, and A/L Media studies.
-   - If a student asks questions about politics, other tuition teachers, general technology, gossip, or personal matters, politely redirect them back to class topics and A/L Media studies:
-     "පුතේ, මම සුරංග ගමගේ සර්ගේ A/L Media පන්ති සම්බන්ධීකාරක. මට ඔබට උදව් කළ හැක්කේ අපගේ Media පන්තිය, කාලසටහන්, ටියුට් සහ විෂය කරුණු සම්බන්ධයෙන් පමණයි. 📚✨ පන්තියට අදාළව ඔබට ඇති ගැටලුව කුමක්දැයි පවසන්න."
+   - If a student asks questions about politics, other tuition teachers, general technology, gossip, or personal matters, politely redirect them back to class topics in 1 short sentence:
+     "පුතේ, මට ඔබට උදව් කළ හැක්කේ අපගේ A/L Media පන්තියේ කටයුතු සම්බන්ධයෙන් පමණයි. 📚✨ පන්තියට අදාළව ඔබට ඇති ගැටලුව කුමක්දැයි පවසන්න."
 
 4. Zero-Database Direct FAQ Answers:
-   - For all general questions regarding timetables, class schedules, fees, night classes, Zoom rules, website registration on mediasuranga.lk, and recording access rules, ANSWER DIRECTLY AND EXCLUSIVELY from the Knowledge Base and Announcements above with ZERO database queries.
+   - For all general questions regarding timetables, class schedules, fees, night classes, website registration on mediasuranga.lk, and recording rules, ANSWER DIRECTLY from the Knowledge Base and Announcements above with ZERO database queries.
 
-5. Tute Delivery Tool Usage ('check_tute_delivery'):
+5. Strict Zoom Link Safety & Handoff ('request_zoom_link_handoff'):
+   - UNDER NO CIRCUMSTANCES should you provide, invent, or share Zoom links, passwords, or meeting IDs.
+   - When a student asks for a Zoom link or meeting credentials (e.g. "Zoom link eka denna", "link eka na", "ada class eke zoom link eka ko"):
+     - IMMEDIATELY call the 'request_zoom_link_handoff' tool.
+     - Respond ONLY with the warm official notice:
+       "පුතේ, ආරක්ෂිත හේතූන් මත Zoom ලින්ක් එක කෙළින්ම මෙතනින් එවන්න බැහැ. අපේ Admin කෙනෙක් ඔයාගේ විස්තර පරීක්ෂා කරලා ඉක්මනින්ම ලින්ක් එක එවාවි. පොඩ්ඩක් රැඳී සිටින්න 🌸"
+
+6. Tute Delivery Tool Usage ('check_tute_delivery'):
    - Call 'check_tute_delivery' ONLY when the student explicitly inquires about their tute dispatch, postal delivery, parcel tracking, or book dispatch.
-   - When records are found: Report delivery status, tracking number, courier service name (e.g., Sri Lanka Post / PromptX), dispatched date, and a polite reminder to check with their local post office/courier using the tracking number (📦🚚).
-   - When no record is found: Clearly inform them that the delivery for this phone number has not yet been logged for the current month, and guide them to send their payment slip/address to the class coordinator (071 016 1699).
-
-6. Zoom & Recording Safety:
-   - Never generate, invent, or share Zoom links or passwords directly. Class sessions and recordings are accessed strictly through mediasuranga.lk after payment approval.
+   - If records are found: Report tracking number, courier service name (📦🚚), and delivery status in 1-2 brief sentences.
+   - If no record is found: The tool handles administrative handoff automatically. Inform them warmly that staff will verify their parcel details.
 
 7. Multi-message Bursts:
-   - Several short student messages may arrive together within seconds. Treat them as a single consolidated inquiry and respond once clearly.`;
+   - Treat consecutive short messages as a single inquiry and reply once briefly.`;
 }
 
 const FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
@@ -171,8 +172,24 @@ const FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
       type: Type.OBJECT,
       properties: {
         month: { type: Type.STRING, description: "Optional month in YYYY-MM format." },
+        student_name: { type: Type.STRING, description: "Optional student name if provided for fallback search." },
+        address_or_district: { type: Type.STRING, description: "Optional address, town, or district for fallback search." },
         delivery_wave: { type: Type.STRING, enum: ["Wave 1", "Wave 2", "Wave 3", "Wave 4"], description: "Optional wave filter." },
         item_type: { type: Type.STRING, enum: ["Monthly Tute", "Special Book"], description: "Optional item filter." },
+      },
+    },
+  },
+  {
+    name: "request_zoom_link_handoff",
+    description:
+      "Request administrative review and manual handoff when a student asks for a Zoom link or class meeting credentials. Never give Zoom links directly.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        reason: {
+          type: Type.STRING,
+          description: "Optional details about which class or link the student requested.",
+        },
       },
     },
   },
@@ -216,6 +233,9 @@ async function checkDelivery(context: AssistantContext, args: Record<string, unk
   const explicitMonth = /^\d{4}-\d{2}$/.test(requestedMonth) ? requestedMonth : null;
   const wave = stringArg(args, "delivery_wave", 20);
   const itemType = stringArg(args, "item_type", 40);
+  const studentNameArg = stringArg(args, "student_name", 100) || (context.studentName ?? "");
+  const addressArg = stringArg(args, "address_or_district", 100);
+
   const phoneMatch = or(
     eq(tuteDeliveriesTable.phoneNumber, phoneKey),
     sql`right(regexp_replace(${tuteDeliveriesTable.phoneNumber}, '\\D', '', 'g'), 9) = ${phoneKey}`,
@@ -251,12 +271,59 @@ async function checkDelivery(context: AssistantContext, args: Record<string, unk
     }
   }
 
+  // SECONDARY FALLBACK: Search by studentName or address if no records found by phone
+  if (!rows.length && (studentNameArg.trim().length >= 3 || addressArg.trim().length >= 3)) {
+    const fallbackConditions = [];
+    if (studentNameArg.trim().length >= 3) {
+      fallbackConditions.push(ilike(tuteDeliveriesTable.studentName, `%${studentNameArg.trim()}%`));
+    }
+    if (addressArg.trim().length >= 3) {
+      fallbackConditions.push(ilike(tuteDeliveriesTable.address, `%${addressArg.trim()}%`));
+    }
+
+    if (fallbackConditions.length) {
+      rows = await db
+        .select()
+        .from(tuteDeliveriesTable)
+        .where(
+          and(
+            or(...fallbackConditions),
+            ...(explicitMonth ? [eq(tuteDeliveriesTable.month, explicitMonth)] : []),
+            ...(wave ? [eq(tuteDeliveriesTable.deliveryWave, wave)] : []),
+            ...(itemType ? [eq(tuteDeliveriesTable.itemType, itemType)] : []),
+          ),
+        )
+        .orderBy(desc(tuteDeliveriesTable.createdAt))
+        .limit(5);
+
+      if (rows.length) {
+        logger.info(
+          { phone: context.phoneNumber, studentName: studentNameArg, matches: rows.length },
+          "[Tute Search Fallback] Found parcel record via secondary name/address search",
+        );
+      }
+    }
+  }
+
   if (!rows.length) {
+    try {
+      await db
+        .update(conversationsTable)
+        .set({ mode: "human" })
+        .where(eq(conversationsTable.phoneNumber, context.phoneNumber));
+      logger.info(
+        { phone: context.phoneNumber },
+        "[Tute Search Fallback] No parcel record found for student. Switched conversation mode to human.",
+      );
+    } catch (err) {
+      logger.warn({ err, phone: context.phoneNumber }, "Failed to switch mode to human during tute fallback");
+    }
+
     return {
       found: false,
       month,
       message:
-        "මෙම දුරකථන අංකය සඳහා මෙම මාසයේ ටියුට් බෙදාහැරීමක් මෙතෙක් වාර්තා වී නොමැත. ඔබ පන්ති ගාස්තු ගෙවා ඇත්නම්, කරුණාකර ඔබගේ ගෙවීම් රිසිට්පත (Payment Slip) සහ නිවැරදි ලිපිනය පන්ති සම්බන්ධීකාරක (071 016 1699) වෙත WhatsApp මඟින් යොමු කරන්න.",
+        "පුතේ, ඔයාගේ නමට හෝ අංකයට අදාළව මේ මාසයේ ටියුට් පාර්සල් විස්තරයක් මෙතෙක් වාර්තා වී නැහැ. අපේ කාර්යාලයේ සම්බන්ධීකාරක කෙනෙක් ඔයාගේ ගෙවීම් විස්තර පරීක්ෂා කරලා ඉක්මනින්ම උදව් කරාවි 🌸",
     };
   }
 
@@ -284,6 +351,25 @@ async function executeTool(
 ): Promise<Record<string, unknown>> {
   if (name === "check_tute_delivery") {
     return checkDelivery(context, args);
+  }
+  if (name === "request_zoom_link_handoff") {
+    try {
+      await db
+        .update(conversationsTable)
+        .set({ mode: "human" })
+        .where(eq(conversationsTable.phoneNumber, context.phoneNumber));
+      logger.info(
+        { phone: context.phoneNumber, reason: args.reason },
+        "[Zoom Handoff Requested] Switched conversation mode to human",
+      );
+    } catch (err) {
+      logger.warn({ err, phone: context.phoneNumber }, "Failed to switch mode to human during Zoom handoff");
+    }
+    return {
+      handoff: true,
+      notice:
+        "පුතේ, ආරක්ෂිත හේතූන් මත Zoom ලින්ක් එක කෙළින්ම මෙතනින් එවන්න බැහැ. අපේ Admin කෙනෙක් ඔයාගේ විස්තර පරීක්ෂා කරලා ඉක්මනින්ම ලින්ක් එක එවාවි. පොඩ්ඩක් රැඳී සිටින්න 🌸",
+    };
   }
   return { error: `Tool ${name} is not supported.` };
 }
@@ -430,6 +516,14 @@ export async function generateStudentReply(
   }
 
   let text = response.text?.trim() ?? "";
+  if (
+    /https?:\/\/[^\s]*zoom\.(us|com)\/[^\s]+/i.test(text) ||
+    (/(zoom\.us|zoom\.com|zoom link|zoom password|zoom passcode|meeting id)/i.test(text) && /link|passcode|password/i.test(text))
+  ) {
+    logger.warn({ phone: context.phoneNumber }, "Sanitized accidental Zoom credentials in model output");
+    text =
+      "පුතේ, ආරක්ෂිත හේතූන් මත Zoom ලින්ක් එක කෙළින්ම මෙතනින් එවන්න බැහැ. අපේ Admin කෙනෙක් ඔයාගේ විස්තර පරීක්ෂා කරලා ඉක්මනින්ම ලින්ක් එක එවාවි. පොඩ්ඩක් රැඳී සිටින්න 🌸";
+  }
   if (!text) {
     logger.warn(
       { phone: context.phoneNumber },

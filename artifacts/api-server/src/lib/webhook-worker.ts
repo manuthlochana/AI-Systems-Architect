@@ -3,6 +3,7 @@ import {
   conversationMessagesTable,
   conversationsTable,
   db,
+  suggestedKnowledgeItemsTable,
   webhookEventsTable,
 } from "@workspace/db";
 import { generateStudentReply } from "./ai-agent";
@@ -313,7 +314,7 @@ async function processInbound(event: WebhookEvent): Promise<void> {
           lastStaffMessageAt: lastStaffAt,
           minutesRemaining: ((THIRTY_MINUTES_MS - elapsedMs) / (60 * 1000)).toFixed(1),
         },
-        "[Muted] Human conversation active within 30-minute grace window. Skipping AI response.",
+        "[Muted] Within 30-minute staff interaction window.",
       );
       return;
     }
@@ -505,6 +506,50 @@ async function processOutboundOrUpdate(event: WebhookEvent): Promise<void> {
     { phone: phoneNumber, providerMessageId: staffMsg.providerMessageId },
     "Staff outbound message tracked: mode set to 'human', last_staff_message_at updated",
   );
+
+  // Shadow Learning Queue: Capture Q&A pair when staff replies to a student
+  if (
+    staffMsg.body &&
+    !staffMsg.body.startsWith("[WhatsApp ") &&
+    staffMsg.body.trim().length > 1
+  ) {
+    try {
+      const [lastInbound] = await db
+        .select({ body: conversationMessagesTable.body })
+        .from(conversationMessagesTable)
+        .where(
+          and(
+            eq(conversationMessagesTable.phoneNumber, phoneNumber),
+            eq(conversationMessagesTable.direction, "inbound"),
+          ),
+        )
+        .orderBy(desc(conversationMessagesTable.createdAt))
+        .limit(1);
+
+      if (
+        lastInbound?.body &&
+        !lastInbound.body.startsWith("[WhatsApp ") &&
+        lastInbound.body.trim().length > 1
+      ) {
+        await db.insert(suggestedKnowledgeItemsTable).values({
+          sourceConversationId: phoneNumber,
+          studentQuestion: lastInbound.body.trim(),
+          humanStaffResponse: staffMsg.body.trim(),
+          suggestedCategory: "faq",
+          status: "pending",
+        });
+        logger.info(
+          { phone: phoneNumber },
+          "[Shadow Learning] Captured student question and staff response into suggested_knowledge_items",
+        );
+      }
+    } catch (err) {
+      logger.warn(
+        { err, phone: phoneNumber },
+        "Failed to record shadow learning suggestion",
+      );
+    }
+  }
 }
 
 async function processOneEvent(): Promise<boolean> {

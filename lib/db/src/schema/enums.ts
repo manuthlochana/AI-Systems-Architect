@@ -30,3 +30,8 @@ export const messageDirectionEnum = pgEnum("message_direction", [
   "inbound",
   "outbound",
 ]);
+export const suggestionStatusEnum = pgEnum("suggestion_status", [
+  "pending",
+  "approved",
+  "rejected",
+]);
