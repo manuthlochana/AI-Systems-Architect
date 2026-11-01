@@ -113,3 +113,6 @@ dashboardEvents.setMaxListeners(50);
 export function emitDashboardEvent(type: string, data: Record<string, unknown> = {}): void {
   dashboardEvents.emit("event", { type, ...data, at: new Date().toISOString() });
 }
+
+// Connect eagerly so the first lock/buffer operation already uses Redis.
+getClient();
