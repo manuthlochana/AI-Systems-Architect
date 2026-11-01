@@ -4,8 +4,11 @@ import {
   Activity, ArrowUpRight, BookOpen, Check, ChevronDown,
   CircleAlert, Copy, FileSpreadsheet, KeyRound, LogOut, MessageCircle,
   RefreshCw, ShieldCheck, Terminal, Upload, Users, Bot,
-  Sparkles, Edit3, Trash2, CheckCircle2, XCircle,
+  Sparkles, Edit3, Trash2, CheckCircle2, XCircle, Inbox, Settings,
 } from 'lucide-react';
+import { InboxTab } from './components/InboxTab';
+import { BotSettingsTab } from './components/BotSettingsTab';
+import { useDashboardEvents } from './hooks/use-dashboard-events';
 import {
   getGetAdminStatusQueryKey, getGetConversationsQueryKey,
   getGetDeliveriesQueryKey, getGetSuggestedKnowledgeItemsQueryKey,
@@ -23,7 +26,7 @@ const queryClient = new QueryClient({
 
 const DELIVERY_WAVES = ['Wave 1', 'Wave 2', 'Wave 3', 'Wave 4'] as const;
 const ITEM_TYPES = ['Monthly Tute', 'Special Book'] as const;
-type TabType = 'handoffs' | 'knowledge' | 'suggestions' | 'deliveries' | 'health';
+type TabType = 'inbox' | 'handoffs' | 'knowledge' | 'suggestions' | 'deliveries' | 'settings' | 'health';
 
 const now = new Date();
 const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -43,7 +46,7 @@ function dateLabel(value?: string): string {
 
 function AppContent() {
   const client = useQueryClient();
-  const [activeTab, setActiveTab] = useState<TabType>('handoffs');
+  const [activeTab, setActiveTab] = useState<TabType>('inbox');
   const [month, setMonth] = useState(currentMonth);
   const sanitizedMonth = useMemo(() => {
     const match = (month || '').match(/^(\d{4}-\d{2})/);
@@ -78,6 +81,7 @@ function AppContent() {
   const statusQuery = useGetAdminStatus({ request: { credentials: 'include' } });
   const status = statusQuery.data;
   const authenticated = Boolean(status?.authenticated);
+  useDashboardEvents(authenticated);
 
   const createSession = useCreateAdminSession({ request: { credentials: 'include' } });
   const deleteSession = useDeleteAdminSession({ request: { credentials: 'include' } });
@@ -261,6 +265,7 @@ function AppContent() {
   // Derived state
   const conversations = conversationsQuery.data ?? [];
   const handoffQueue = conversations.filter((item) => item.mode === 'human');
+  const attentionCount = conversations.filter((item) => item.chatStatus === 'needs_attention').length;
   const deliveries = deliveriesQuery.data ?? [];
 
   async function handleLogin(e: FormEvent) {
@@ -482,6 +487,23 @@ function AppContent() {
             {/* 4 Essential Tabs */}
             <div className="flex border-b border-border/80 overflow-x-auto gap-2">
               <button
+                onClick={() => setActiveTab('inbox')}
+                className={`flex items-center gap-2 px-4 py-3 text-sm font-semibold border-b-2 transition-all whitespace-nowrap ${
+                  activeTab === 'inbox'
+                    ? 'border-primary text-primary'
+                    : 'border-transparent text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                <Inbox size={16} />
+                <span>Unified Inbox</span>
+                {attentionCount > 0 && (
+                  <span className="px-2 py-0.5 rounded-full bg-red-500/20 text-red-500 text-xs font-bold">
+                    {attentionCount}
+                  </span>
+                )}
+              </button>
+
+              <button
                 onClick={() => setActiveTab('handoffs')}
                 className={`flex items-center gap-2 px-4 py-3 text-sm font-semibold border-b-2 transition-all whitespace-nowrap ${
                   activeTab === 'handoffs'
@@ -540,6 +562,18 @@ function AppContent() {
               </button>
 
               <button
+                onClick={() => setActiveTab('settings')}
+                className={`flex items-center gap-2 px-4 py-3 text-sm font-semibold border-b-2 transition-all whitespace-nowrap ${
+                  activeTab === 'settings'
+                    ? 'border-primary text-primary'
+                    : 'border-transparent text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                <Settings size={16} />
+                <span>Bot Settings</span>
+              </button>
+
+              <button
                 onClick={() => setActiveTab('health')}
                 className={`flex items-center gap-2 px-4 py-3 text-sm font-semibold border-b-2 transition-all whitespace-nowrap ${
                   activeTab === 'health'
@@ -551,6 +585,12 @@ function AppContent() {
                 <span>System Health & Live Logs</span>
               </button>
             </div>
+
+            {activeTab === 'inbox' && (
+              <InboxTab conversations={conversations} loading={conversationsQuery.isLoading} />
+            )}
+
+            {activeTab === 'settings' && <BotSettingsTab />}
 
             {/* TAB 1: Live Handoff Queue */}
             {activeTab === 'handoffs' && (

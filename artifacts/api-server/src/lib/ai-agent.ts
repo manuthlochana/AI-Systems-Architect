@@ -9,14 +9,17 @@ import {
   type FunctionDeclaration,
   type Part,
 } from "@google/genai";
-import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, ne, or, sql } from "drizzle-orm";
 import {
   conversationMessagesTable,
   conversationsTable,
   db,
   dynamicContentTable,
   tuteDeliveriesTable,
+  type BotSettings,
 } from "@workspace/db";
+import { effectivePersona, ESCALATION_REPLY, getBotSettings, GREETING_NOTICE } from "./bot-settings";
+import { escalateConversation } from "./conversation-state";
 import { logger } from "./logger";
 import { sanitizePhone9Digits } from "./spreadsheet";
 
@@ -25,6 +28,8 @@ interface AssistantContext {
   studentName: string | null;
   batch: "2027" | "2028" | "unknown";
   providerMessageId: string;
+  /** Newline-joined text of the CURRENT burst only; entity extraction is bound to this. */
+  turnText?: string;
 }
 
 const KNOWLEDGE_BASE_PATHS = [
@@ -112,7 +117,8 @@ ${formatted}
   }
 }
 
-export async function buildSystemInstruction(): Promise<string> {
+export async function buildSystemInstruction(settings?: BotSettings): Promise<string> {
+  const botSettings = settings ?? (await getBotSettings());
   const dynamicAnnouncements = await fetchDynamicAnnouncements();
   const kb = readKnowledgeBase();
 
@@ -120,77 +126,41 @@ export async function buildSystemInstruction(): Promise<string> {
     ? `${dynamicAnnouncements}\n\n---\n\n${kb}`
     : kb;
 
+  // Persona/guidelines live in the database (bot_settings) so the dashboard can edit them live.
   return `${knowledgeSection}
 
 ---
-CRITICAL OPERATIONAL & PERSONA INSTRUCTIONS:
-1. Strict Brevity & Concise Persona:
-   - Keep EVERY reply strictly within 1 to 3 short sentences. Never output long essays, bullet point lists, or repetitive walls of text.
-   - You are the caring, authentic, and professional Academic Coordinator for Suranga Gamage Sir's A/L Media classes at mediasuranga.lk.
-   - Speak in natural, everyday conversational Sri Lankan Sinhala suitable for school students. Address the student warmly and lovingly as "පුතේ" or "දුවේ" (e.g., "ආයුබෝවන් පුතේ ✨", "තෙරුවන් සරණයි පුතේ 🌸", "ස්තූතියි පුතේ").
-   - Anti-Repetition: Do NOT use identical robotic opening sentences in every message. Naturally vary greetings and phrasing.
-   - Single Clarifying Question: When a student inquiry is ambiguous, vague, or missing crucial details (e.g. they ask about class without specifying 2027 or 2028 batch), ask ONE polite, concise clarifying question rather than guessing or dumping multi-paragraph explanations.
-
-2. Contextual Emoji Tone:
-   - Use emojis subtly and contextually (1 to 2 emojis per reply):
-     📚 for notes and syllabus books.
-     🎥 for Zoom sessions and recordings.
-     📦🚚 for tute deliveries.
-     🗓️ for schedules.
-     ✨🌸 for warm greetings and blessings.
-
-3. Strict Guardrails:
-   - The bot exists STRICTLY for Suranga Gamage's A/L Media classes, admissions, timetables, tute parcels, website access, and A/L Media studies.
-   - If a student asks questions about politics, other tuition teachers, general technology, gossip, or personal matters, politely redirect them back to class topics in 1 short sentence:
-     "පුතේ, මට ඔබට උදව් කළ හැක්කේ අපගේ A/L Media පන්තියේ කටයුතු සම්බන්ධයෙන් පමණයි. 📚✨ පන්තියට අදාළව ඔබට ඇති ගැටලුව කුමක්දැයි පවසන්න."
-
-4. Zero-Database Direct FAQ Answers:
-   - For all general questions regarding timetables, class schedules, fees, night classes, website registration on mediasuranga.lk, and recording rules, ANSWER DIRECTLY from the Knowledge Base and Announcements above with ZERO database queries.
-
-5. Strict Zoom Link Safety & Handoff ('request_zoom_link_handoff'):
-   - UNDER NO CIRCUMSTANCES should you provide, invent, or share Zoom links, passwords, or meeting IDs.
-   - When a student asks for a Zoom link or meeting credentials (e.g. "Zoom link eka denna", "link eka na", "ada class eke zoom link eka ko"):
-     - IMMEDIATELY call the 'request_zoom_link_handoff' tool.
-     - Respond ONLY with the warm official notice:
-       "පුතේ, ආරක්ෂිත හේතූන් මත Zoom ලින්ක් එක කෙළින්ම මෙතනින් එවන්න බැහැ. අපේ Admin කෙනෙක් ඔයාගේ විස්තර පරීක්ෂා කරලා ඉක්මනින්ම ලින්ක් එක එවාවි. පොඩ්ඩක් රැඳී සිටින්න 🌸"
-
-6. Tute Delivery Tool Usage ('check_tute_delivery'):
-   - Call 'check_tute_delivery' ONLY when the student explicitly inquires about their tute dispatch, postal delivery, parcel tracking, or book dispatch.
-   - If records are found: Report tracking number, courier service name (📦🚚), and delivery status in 1-2 brief sentences.
-   - If no record is found: The tool handles administrative handoff automatically. Inform them warmly that staff will verify their parcel details.
-
-7. Multi-message Bursts:
-   - Treat consecutive short messages as a single inquiry and reply once briefly.`;
+${effectivePersona(botSettings)}`;
 }
 
 const FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "check_tute_delivery",
     description:
-      "Look up this student's tute / book dispatch records and tracking numbers. Call ONLY when a student explicitly asks about tute delivery, parcel dispatch, or tracking number.",
+      "Look up tute / book dispatch records. Search ONLY by a phone number, name or tracking number that the student wrote in their CURRENT message. Never reuse details from earlier messages. If the student asks about their own number without typing one, call with no search fields.",
     parameters: {
       type: Type.OBJECT,
       properties: {
+        phone: { type: Type.STRING, description: "Sri Lankan phone number typed in the current message, if any." },
+        name: { type: Type.STRING, description: "Student name typed in the current message, exactly as written (Sinhala or English), if any." },
+        trackingNumber: { type: Type.STRING, description: "Tracking number typed in the current message, if any." },
         month: { type: Type.STRING, description: "Optional month in YYYY-MM format." },
-        student_name: { type: Type.STRING, description: "Optional student name if provided for fallback search." },
-        address_or_district: { type: Type.STRING, description: "Optional address, town, or district for fallback search." },
         delivery_wave: { type: Type.STRING, enum: ["Wave 1", "Wave 2", "Wave 3", "Wave 4"], description: "Optional wave filter." },
         item_type: { type: Type.STRING, enum: ["Monthly Tute", "Special Book"], description: "Optional item filter." },
       },
     },
   },
   {
-    name: "request_zoom_link_handoff",
+    name: "escalate_to_human",
     description:
-      "Request administrative review and manual handoff when a student asks for a Zoom link or class meeting credentials. Never give Zoom links directly.",
+      "Hand the conversation to the office staff and mute the bot. Use for actionable requests (payment slip verification, password reset, login errors, Zoom link requests), fee relief / free card requests, frustrated students, or questions that are not answered by the Knowledge Base.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        reason: {
-          type: Type.STRING,
-          description: "Optional details about which class or link the student requested.",
-        },
+        conversationId: { type: Type.STRING, description: "The current conversation id (phone number)." },
+        reason: { type: Type.STRING, description: "Short reason for the office staff." },
       },
+      required: ["reason"],
     },
   },
 ];
@@ -226,22 +196,148 @@ function detectCourierService(trackingNumber: string): string {
   return "Sri Lanka Post / Registered Courier (ලියාපදිංචි තැපැල්)";
 }
 
-async function checkDelivery(context: AssistantContext, args: Record<string, unknown>) {
-  // Always the sender's own records; lookups use the uniform 9-digit phone key.
-  const phoneKey = sanitizePhone9Digits(context.phoneNumber);
+const SINHALA_CHAR = /[\u0D80-\u0DFF]/;
+
+/**
+ * Extracts a Sri Lankan mobile number from free text and returns its 9-digit core
+ * (e.g. "+94 77 299 4218", "0772994218", "772994218" -> "772994218").
+ */
+export function extractSriLankanPhone(text: string): string | null {
+  const match = text.match(/(?<!\d)(?:\+?94[\s-]?|0[\s-]?)?(7\d)[\s-]?(\d{3})[\s-]?(\d{4})(?!\d)/);
+  return match ? `${match[1]}${match[2]}${match[3]}` : null;
+}
+
+/** Both stored/typed formats for a 9-digit core: 07XXXXXXXX and 947XXXXXXXX (plus bare / +94 forms). */
+function phoneFormats(core: string): string[] {
+  return [`0${core}`, `94${core}`, core, `+94${core}`];
+}
+
+const OWN_NUMBER_REQUEST =
+  /(මගේ|mage|my)\s*(නම්බර්|නම්බරය|නම්බර|අංකය|අංකයට|number|no\b|nambar|num\b)/i;
+
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
+/** Turns a Sinhala-script name into 2-3 phonetic English spellings using Gemini. */
+async function transliterateName(client: GoogleGenAI, name: string): Promise<string[]> {
+  try {
+    const response = await generateContentWithFallback(client, {
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: `Transliterate this Sinhala personal name into 2 or 3 plausible English (Latin) spellings as they would appear in a Sri Lankan student register (e.g. "අවිශ්ක මලින්ද" -> ["Awishka Malinda","Avishka Malinda"]). Reply with ONLY a JSON array of strings.\n\nName: ${name}`,
+            },
+          ],
+        },
+      ],
+      config: {
+        systemInstruction: "You transliterate Sinhala names into English. Output strictly a JSON array of strings.",
+        responseMimeType: "application/json",
+        temperature: 0,
+      },
+    });
+    const parsed: unknown = JSON.parse(response.text?.trim() || "[]");
+    if (Array.isArray(parsed)) {
+      return parsed
+        .filter((v): v is string => typeof v === "string")
+        .map((v) => v.replace(/[^A-Za-z\s.'-]/g, " ").replace(/\s+/g, " ").trim())
+        .filter((v) => v.length >= 3)
+        .slice(0, 3);
+    }
+  } catch (err) {
+    logger.warn({ err: err instanceof Error ? err.message : String(err) }, "Name transliteration failed");
+  }
+  return [];
+}
+
+async function nameConditions(client: GoogleGenAI, name: string) {
+  const variants = SINHALA_CHAR.test(name) ? await transliterateName(client, name) : [name];
+  const unique = [...new Set(variants.map((v) => v.replace(/[^A-Za-z\s.'-]/g, " ").replace(/\s+/g, " ").trim()))]
+    .filter((v) => v.length >= 3);
+  if (unique.length) {
+    logger.info({ name, variants: unique }, "[Tute Search] Name variants");
+  }
+  const conditions = [];
+  for (const variant of unique) {
+    conditions.push(ilike(tuteDeliveriesTable.studentName, `%${escapeLike(variant)}%`));
+    const tokens = variant.split(" ").filter((t) => t.length >= 3);
+    if (tokens.length > 1) {
+      conditions.push(
+        and(...tokens.map((t) => ilike(tuteDeliveriesTable.studentName, `%${escapeLike(t)}%`))),
+      );
+    }
+  }
+  return conditions;
+}
+
+async function checkDelivery(
+  client: GoogleGenAI,
+  context: AssistantContext,
+  args: Record<string, unknown>,
+) {
+  const turnText = context.turnText ?? "";
+  const turnLower = turnText.toLowerCase();
+
+  // Entity extraction is bound STRICTLY to the current turn (no sticky identity).
+  let phoneCore = extractSriLankanPhone(turnText);
+  if (!phoneCore) {
+    const argPhone = extractSriLankanPhone(stringArg(args, "phone", 40));
+    // Accept a model-supplied phone only if its digits really appear in the current message.
+    if (argPhone && turnText.replace(/\D/g, "").includes(argPhone)) phoneCore = argPhone;
+  }
+
+  let name = stringArg(args, "name", 100);
+  if (name && !(turnLower.includes(name.toLowerCase()) || SINHALA_CHAR.test(turnText))) name = "";
+  // A phone number without a name queries ONLY by phone.
+  if (phoneCore) name = "";
+
+  let trackingNumber = stringArg(args, "trackingNumber", 60);
+  if (trackingNumber && !turnLower.includes(trackingNumber.toLowerCase())) trackingNumber = "";
+
+  let searchedBy: "phone" | "name" | "tracking" | "sender" | null = null;
+  let identity;
+  if (phoneCore) {
+    searchedBy = "phone";
+    identity = or(
+      inArray(tuteDeliveriesTable.phoneNumber, phoneFormats(phoneCore)),
+      sql`right(regexp_replace(${tuteDeliveriesTable.phoneNumber}, '\\D', '', 'g'), 9) = ${phoneCore}`,
+    );
+  } else if (trackingNumber) {
+    searchedBy = "tracking";
+    identity = sql`lower(${tuteDeliveriesTable.trackingNumber}) = ${trackingNumber.toLowerCase()}`;
+  } else if (name) {
+    searchedBy = "name";
+    const conditions = await nameConditions(client, name);
+    if (conditions.length) identity = or(...conditions);
+  } else if (OWN_NUMBER_REQUEST.test(turnText)) {
+    // The ONLY case where the sender's own number is used: explicit "my number" request.
+    searchedBy = "sender";
+    const core = sanitizePhone9Digits(context.phoneNumber);
+    identity = or(
+      inArray(tuteDeliveriesTable.phoneNumber, phoneFormats(core)),
+      sql`right(regexp_replace(${tuteDeliveriesTable.phoneNumber}, '\\D', '', 'g'), 9) = ${core}`,
+    );
+  }
+
+  if (!identity || !searchedBy) {
+    return {
+      found: false,
+      needInfo: true,
+      message:
+        "Ask the student, in one short sentence, to send the phone number (or full name) the tute was registered with.",
+    };
+  }
+  logger.info({ phone: context.phoneNumber, searchedBy, phoneCore }, "[Tute Search] Executing lookup");
+
   const requestedMonth = stringArg(args, "month", 7);
   const explicitMonth = /^\d{4}-\d{2}$/.test(requestedMonth) ? requestedMonth : null;
   const wave = stringArg(args, "delivery_wave", 20);
   const itemType = stringArg(args, "item_type", 40);
-  const studentNameArg = stringArg(args, "student_name", 100) || (context.studentName ?? "");
-  const addressArg = stringArg(args, "address_or_district", 100);
-
-  const phoneMatch = or(
-    eq(tuteDeliveriesTable.phoneNumber, phoneKey),
-    sql`right(regexp_replace(${tuteDeliveriesTable.phoneNumber}, '\\D', '', 'g'), 9) = ${phoneKey}`,
-  );
   const filters = [
-    phoneMatch,
+    identity,
     ...(wave ? [eq(tuteDeliveriesTable.deliveryWave, wave)] : []),
     ...(itemType ? [eq(tuteDeliveriesTable.itemType, itemType)] : []),
   ];
@@ -251,14 +347,15 @@ async function checkDelivery(context: AssistantContext, args: Record<string, unk
     .select()
     .from(tuteDeliveriesTable)
     .where(and(...filters, eq(tuteDeliveriesTable.month, month)))
-    .orderBy(tuteDeliveriesTable.deliveryWave, tuteDeliveriesTable.itemType);
+    .orderBy(tuteDeliveriesTable.deliveryWave, tuteDeliveriesTable.itemType)
+    .limit(20);
 
   if (!rows.length && !explicitMonth) {
-    // Fall back to student's most recent month with records
+    // Fall back to the most recent month that has records for this identity
     const [latest] = await db
       .select({ month: tuteDeliveriesTable.month })
       .from(tuteDeliveriesTable)
-      .where(phoneMatch)
+      .where(identity)
       .orderBy(desc(tuteDeliveriesTable.createdAt))
       .limit(1);
     if (latest?.month) {
@@ -267,69 +364,34 @@ async function checkDelivery(context: AssistantContext, args: Record<string, unk
         .select()
         .from(tuteDeliveriesTable)
         .where(and(...filters, eq(tuteDeliveriesTable.month, month)))
-        .orderBy(tuteDeliveriesTable.deliveryWave, tuteDeliveriesTable.itemType);
-    }
-  }
-
-  // SECONDARY FALLBACK: Search by studentName or address if no records found by phone
-  if (!rows.length && (studentNameArg.trim().length >= 3 || addressArg.trim().length >= 3)) {
-    const fallbackConditions = [];
-    if (studentNameArg.trim().length >= 3) {
-      fallbackConditions.push(ilike(tuteDeliveriesTable.studentName, `%${studentNameArg.trim()}%`));
-    }
-    if (addressArg.trim().length >= 3) {
-      fallbackConditions.push(ilike(tuteDeliveriesTable.address, `%${addressArg.trim()}%`));
-    }
-
-    if (fallbackConditions.length) {
-      rows = await db
-        .select()
-        .from(tuteDeliveriesTable)
-        .where(
-          and(
-            or(...fallbackConditions),
-            ...(explicitMonth ? [eq(tuteDeliveriesTable.month, explicitMonth)] : []),
-            ...(wave ? [eq(tuteDeliveriesTable.deliveryWave, wave)] : []),
-            ...(itemType ? [eq(tuteDeliveriesTable.itemType, itemType)] : []),
-          ),
-        )
-        .orderBy(desc(tuteDeliveriesTable.createdAt))
-        .limit(5);
-
-      if (rows.length) {
-        logger.info(
-          { phone: context.phoneNumber, studentName: studentNameArg, matches: rows.length },
-          "[Tute Search Fallback] Found parcel record via secondary name/address search",
-        );
-      }
+        .orderBy(tuteDeliveriesTable.deliveryWave, tuteDeliveriesTable.itemType)
+        .limit(20);
     }
   }
 
   if (!rows.length) {
-    try {
-      await db
-        .update(conversationsTable)
-        .set({ mode: "human" })
-        .where(eq(conversationsTable.phoneNumber, context.phoneNumber));
-      logger.info(
-        { phone: context.phoneNumber },
-        "[Tute Search Fallback] No parcel record found for student. Switched conversation mode to human.",
-      );
-    } catch (err) {
-      logger.warn({ err, phone: context.phoneNumber }, "Failed to switch mode to human during tute fallback");
-    }
-
     return {
       found: false,
       month,
       message:
-        "පුතේ, ඔයාගේ නමට හෝ අංකයට අදාළව මේ මාසයේ ටියුට් පාර්සල් විස්තරයක් මෙතෙක් වාර්තා වී නැහැ. අපේ කාර්යාලයේ සම්බන්ධීකාරක කෙනෙක් ඔයාගේ ගෙවීම් විස්තර පරීක්ෂා කරලා ඉක්මනින්ම උදව් කරාවි 🌸",
+        "No delivery record exists for the details given. Tell the student briefly, and ask them to re-check the phone number. If they already retried, call escalate_to_human.",
+    };
+  }
+
+  // A name can match several different students: never reveal parcels until the phone is confirmed.
+  if (searchedBy === "name" && new Set(rows.map((r) => r.phoneNumber)).size > 1) {
+    return {
+      found: false,
+      ambiguous: true,
+      message:
+        "Several students match this name. Ask the student, in one short sentence, to send the registered phone number instead.",
     };
   }
 
   return {
     found: true,
     month,
+    searchedBy,
     records: rows.map((row) => ({
       itemType: row.itemType,
       deliveryWave: row.deliveryWave,
@@ -337,41 +399,32 @@ async function checkDelivery(context: AssistantContext, args: Record<string, unk
       courierService: detectCourierService(row.trackingNumber),
       deliveryStatus: row.status,
       dispatchedDate: row.createdAt ? new Date(row.createdAt).toLocaleDateString("en-CA") : "Dispatched",
-      address: row.address,
-      reminder:
-        "කරුණාකර ඔබගේ ළඟම ඇති තැපැල් කාර්යාලයෙන් හෝ බෙදාහැරීමේ සේවාවෙන් මෙම ලුහුබැඳීමේ අංකය (Tracking Number) ඉදිරිපත් කර විමසන්න.",
+      ...(searchedBy === "phone" || searchedBy === "sender" ? { address: row.address } : {}),
     })),
   };
 }
 
+interface ToolOutcome {
+  result: Record<string, unknown>;
+  escalated?: boolean;
+}
+
 async function executeTool(
+  client: GoogleGenAI,
   name: string,
   args: Record<string, unknown>,
   context: AssistantContext,
-): Promise<Record<string, unknown>> {
+): Promise<ToolOutcome> {
   if (name === "check_tute_delivery") {
-    return checkDelivery(context, args);
+    return { result: await checkDelivery(client, context, args) };
   }
-  if (name === "request_zoom_link_handoff") {
-    try {
-      await db
-        .update(conversationsTable)
-        .set({ mode: "human" })
-        .where(eq(conversationsTable.phoneNumber, context.phoneNumber));
-      logger.info(
-        { phone: context.phoneNumber, reason: args.reason },
-        "[Zoom Handoff Requested] Switched conversation mode to human",
-      );
-    } catch (err) {
-      logger.warn({ err, phone: context.phoneNumber }, "Failed to switch mode to human during Zoom handoff");
-    }
-    return {
-      handoff: true,
-      notice:
-        "පුතේ, ආරක්ෂිත හේතූන් මත Zoom ලින්ක් එක කෙළින්ම මෙතනින් එවන්න බැහැ. අපේ Admin කෙනෙක් ඔයාගේ විස්තර පරීක්ෂා කරලා ඉක්මනින්ම ලින්ක් එක එවාවි. පොඩ්ඩක් රැඳී සිටින්න 🌸",
-    };
+  if (name === "escalate_to_human") {
+    // The conversation id argument is ignored on purpose: only the current chat can be escalated.
+    const reason = stringArg(args, "reason", 400) || "Unspecified";
+    await escalateConversation(context.phoneNumber, reason);
+    return { result: { escalated: true, reply: ESCALATION_REPLY }, escalated: true };
   }
-  return { error: `Tool ${name} is not supported.` };
+  return { result: { error: `Tool ${name} is not supported.` } };
 }
 
 const CANDIDATE_MODELS = [
@@ -387,15 +440,16 @@ const CANDIDATE_MODELS = [
   "gemini-pro-latest",
 ].filter((m): m is string => Boolean(m));
 
+interface GenerationConfig {
+  systemInstruction: string;
+  tools?: [{ functionDeclarations: FunctionDeclaration[] }];
+  responseMimeType?: string;
+  temperature?: number;
+}
+
 async function generateContentWithFallback(
   client: GoogleGenAI,
-  req: {
-    contents: Content[];
-    config: {
-      systemInstruction: string;
-      tools: [{ functionDeclarations: FunctionDeclaration[] }];
-    };
-  },
+  req: { contents: Content[]; config: GenerationConfig },
 ) {
   let lastError: unknown;
   for (const model of CANDIDATE_MODELS) {
@@ -428,7 +482,12 @@ export async function generateStudentReply(
       createdAt: conversationMessagesTable.createdAt,
     })
     .from(conversationMessagesTable)
-    .where(eq(conversationMessagesTable.phoneNumber, context.phoneNumber))
+    .where(
+      and(
+        eq(conversationMessagesTable.phoneNumber, context.phoneNumber),
+        ne(conversationMessagesTable.deliveryStatus, "closed_silently"),
+      ),
+    )
     .orderBy(desc(conversationMessagesTable.createdAt))
     .limit(10);
 
@@ -446,22 +505,33 @@ export async function generateStudentReply(
     }
   }
   while (contents.length && contents[0].role !== "user") contents.shift();
+
+  // The current burst (6s buffer) replaces the trailing user turn so it is one clean prompt.
+  if (context.turnText) {
+    const burst = { role: "user", parts: [{ text: context.turnText }] };
+    if (contents.length && contents[contents.length - 1].role === "user") {
+      contents[contents.length - 1] = burst;
+    } else {
+      contents.push(burst);
+    }
+  }
   if (!contents.length) {
     contents.push({ role: "user", parts: [{ text: "Hi" }] });
   }
 
   const client = new GoogleGenAI({ apiKey });
-  const systemInstruction = await buildSystemInstruction();
+  const settings = await getBotSettings();
+  const systemInstruction = await buildSystemInstruction(settings);
+  const config: GenerationConfig = {
+    systemInstruction,
+    tools: [{ functionDeclarations: FUNCTION_DECLARATIONS }],
+    temperature: settings.temperature,
+  };
 
-  let response = await generateContentWithFallback(client, {
-    contents,
-    config: {
-      systemInstruction,
-      tools: [{ functionDeclarations: FUNCTION_DECLARATIONS }],
-    },
-  });
+  let response = await generateContentWithFallback(client, { contents, config });
 
   let lastIntent = "general_inquiry";
+  let escalated = false;
   for (let turn = 0; turn < 3; turn += 1) {
     const calls = response.functionCalls ?? [];
     if (!calls.length) break;
@@ -479,12 +549,13 @@ export async function generateStudentReply(
           : {};
       lastIntent = name;
       try {
-        const result = await executeTool(name, args, context);
+        const outcome = await executeTool(client, name, args, context);
+        if (outcome.escalated) escalated = true;
         functionResponses.push({
           functionResponse: {
             name,
             ...(call.id ? { id: call.id } : {}),
-            response: result,
+            response: outcome.result,
           },
         });
       } catch (error) {
@@ -505,15 +576,13 @@ export async function generateStudentReply(
     }
 
     if (!functionResponses.length) break;
+    // Once escalated the reply is fixed; no need for another model round-trip.
+    if (escalated) break;
     contents.push({ role: "user", parts: functionResponses });
-    response = await generateContentWithFallback(client, {
-      contents,
-      config: {
-        systemInstruction,
-        tools: [{ functionDeclarations: FUNCTION_DECLARATIONS }],
-      },
-    });
+    response = await generateContentWithFallback(client, { contents, config });
   }
+
+  if (escalated) return { text: ESCALATION_REPLY, lastIntent };
 
   let text = response.text?.trim() ?? "";
   if (
@@ -521,16 +590,15 @@ export async function generateStudentReply(
     (/(zoom\.us|zoom\.com|zoom link|zoom password|zoom passcode|meeting id)/i.test(text) && /link|passcode|password/i.test(text))
   ) {
     logger.warn({ phone: context.phoneNumber }, "Sanitized accidental Zoom credentials in model output");
-    text =
-      "පුතේ, ආරක්ෂිත හේතූන් මත Zoom ලින්ක් එක කෙළින්ම මෙතනින් එවන්න බැහැ. අපේ Admin කෙනෙක් ඔයාගේ විස්තර පරීක්ෂා කරලා ඉක්මනින්ම ලින්ක් එක එවාවි. පොඩ්ඩක් රැඳී සිටින්න 🌸";
+    await escalateConversation(context.phoneNumber, "Student requested a Zoom link / credentials");
+    return { text: ESCALATION_REPLY, lastIntent: "escalate_to_human" };
   }
   if (!text) {
     logger.warn(
       { phone: context.phoneNumber },
-      "Gemini returned empty reply text; using coordinator fallback message",
+      "Gemini returned empty reply text; using Meedi greeting fallback",
     );
-    text =
-      "ආයුබෝවන් පුතේ, මම සුරංග ගමගේ සර්ගේ A/L Media පන්ති සම්බන්ධීකාරක. ඔබට අවශ්‍ය පන්ති වේලාවන්, ටියුට් බෙදාහැරීම් හෝ පන්ති පිළිබඳ විස්තර මෙතැනින් විමසිය හැක. හදිසි විමසීම් සඳහා කාර්යාලය අමතන්න: 071 016 1699.";
+    text = GREETING_NOTICE;
   }
   return { text, lastIntent };
 }

@@ -80,6 +80,15 @@ export const ConversationMode = {
   human: 'human',
 } as const;
 
+export type ConversationChatStatus = typeof ConversationChatStatus[keyof typeof ConversationChatStatus];
+
+
+export const ConversationChatStatus = {
+  bot: 'bot',
+  needs_attention: 'needs_attention',
+  admin_locked: 'admin_locked',
+} as const;
+
 export interface Conversation {
   phoneNumber: string;
   /** @nullable */
@@ -93,6 +102,7 @@ export interface Conversation {
   createdAt: string;
   /** @nullable */
   lastMessage?: string | null;
+  chatStatus: ConversationChatStatus;
 }
 
 export type ConversationModeInputMode = typeof ConversationModeInputMode[keyof typeof ConversationModeInputMode];

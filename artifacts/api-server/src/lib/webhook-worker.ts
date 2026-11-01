@@ -7,12 +7,17 @@ import {
   webhookEventsTable,
 } from "@workspace/db";
 import { generateStudentReply } from "./ai-agent";
+import { getBotSettings } from "./bot-settings";
+import { lockForAdmin, lockKey, releaseToBot } from "./conversation-state";
+import { emitDashboardEvent, kvDrain, kvGet, kvPush } from "./kv";
 import { logger } from "./logger";
 import { normalizePhoneNumber, sanitizePhone9Digits, toPhoneKey } from "./spreadsheet";
 import {
   isGroupChatEvent,
+  isSilentInboundType,
   parseInboundMessage,
   parseStaffOutboundMessage,
+  RELEASE_EMOJIS,
 } from "./whatsapp-event";
 import { isYCloudConfigured, sendWhatsAppTyping, sendYCloudText } from "./ycloud";
 
@@ -20,10 +25,10 @@ const MAX_ATTEMPTS = 5;
 const RETRY_DELAY_MS = 15_000;
 const PROCESSING_LEASE_MS = 3 * 60_000;
 const WHATSAPP_SESSION_MS = 24 * 60 * 60_000;
-const HUMAN_HANDOFF_MS = 48 * 60 * 60 * 1000;
 
 /** Rapid-fire messages inside this window are merged into one Gemini prompt. */
-const DEBOUNCE_WINDOW_MS = 2_000;
+const DEBOUNCE_WINDOW_MS = 6_000;
+const BUFFER_TTL_SECONDS = 120;
 const DEBOUNCE_MAX_RETRIES = 2;
 const DEBOUNCE_RETRY_DELAY_MS = 15_000;
 
@@ -31,8 +36,6 @@ const DAILY_MESSAGE_LIMIT = 25;
 const COLOMBO_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const DAILY_LIMIT_MESSAGE =
   "ඔබ අද දිනට හිමි පණිවිඩ සීමාව ඉක්මවා ඇත. හදිසි අවශ්‍යතාවයක් සඳහා කාර්යාලය අමතන්න: 071 016 1699.";
-const NON_TEXT_WARNING_MESSAGE =
-  "පුතේ, දැනට මට ලිඛිත පණිවිඩ (Text) පමණක් කියවිය හැක. කරුණාකර ඔබගේ ගැටලුව Type කර එවන්න.";
 
 type WebhookEvent = typeof webhookEventsTable.$inferSelect;
 
@@ -110,8 +113,23 @@ interface PendingDebounce {
   retries: number;
 }
 
-/** In-memory debounce queue keyed by the 9-digit phone key. */
+/** In-memory debounce timers keyed by the 9-digit phone key (the text itself lives in the KV buffer). */
 const debounceQueue = new Map<string, PendingDebounce>();
+
+const bufferKey = (phoneKey: string) => `chat:buf:${phoneKey}`;
+
+/** Acknowledgements / sign-offs that must never trigger a reply (zero ping-pong). */
+export const CLOSING_REGEX =
+  /^(ok|okay|ok sir|okay sir|thanks|thanks sir|thank you|thank you sir|hari|hari sir|ela|ow sir|suba dawasak|bye|naa sir|thx|thnx)[\s.!🌸✨]*$/i;
+
+async function cancelPendingReply(phoneKey: string): Promise<void> {
+  const pending = debounceQueue.get(phoneKey);
+  if (pending) {
+    clearTimeout(pending.timer);
+    debounceQueue.delete(phoneKey);
+  }
+  await kvDrain(bufferKey(phoneKey));
+}
 
 function scheduleDebouncedReply(
   key: string,
@@ -125,31 +143,62 @@ function scheduleDebouncedReply(
   debounceQueue.set(key, { ...entry, timer, retries });
 }
 
+/** Mute check shared by ingestion and flush: Redis lock, human mode, or an unexpired DB lock. */
+async function isBotMuted(
+  conversation: typeof conversationsTable.$inferSelect | undefined,
+  phoneNumber: string,
+  timeoutHours: number,
+): Promise<boolean> {
+  const redisLock = Boolean(await kvGet(lockKey(phoneNumber)));
+  if (!conversation) return redisLock;
+  if (conversation.mode !== "human") return redisLock;
+  if (redisLock || conversation.needsAttention) return true;
+
+  // mode === 'human' with no Redis lock: honour the DB timestamp, and auto-release once the
+  // rolling window has fully elapsed. Explicit human mode without any staff activity stays muted.
+  const lastActivity = conversation.lastAdminActivityAt ?? conversation.lastStaffMessageAt;
+  if (!lastActivity) return true;
+  const elapsedMs = Date.now() - new Date(lastActivity).getTime();
+  if (elapsedMs < timeoutHours * 3600_000) return true;
+
+  await releaseToBot(phoneNumber);
+  logger.info(
+    { phone: phoneNumber, hoursElapsed: (elapsedMs / 3600_000).toFixed(1) },
+    "[Auto-Release] Admin lock window expired. Conversation switched back to bot mode.",
+  );
+  return false;
+}
+
 async function flushDebounced(key: string): Promise<void> {
   const entry = debounceQueue.get(key);
   if (!entry) return;
   clearTimeout(entry.timer);
   debounceQueue.delete(key);
 
+  const texts = await kvDrain(bufferKey(key));
+  if (!texts.length) return;
+
   try {
+    const settings = await getBotSettings();
     const [conversation] = await db
       .select()
       .from(conversationsTable)
       .where(eq(conversationsTable.phoneNumber, entry.phoneNumber))
       .limit(1);
-    // Staff may have taken over while the debounce window was open.
-    if (conversation?.mode === "human") return;
 
-    // Dispatch typing indicator while AI generates the response
+    // Staff may have taken over (or Meedi switched off) while the debounce window was open.
+    if (!settings.enabled) return;
+    if (await isBotMuted(conversation, entry.phoneNumber, settings.handoverTimeoutHours)) return;
+
     void sendWhatsAppTyping(entry.phoneNumber, entry.providerMessageId).catch(() => {});
 
-    // All inbound texts in the burst are in the DB; generateStudentReply merges
-    // consecutive student messages into a single consolidated prompt.
+    // Burst aggregation: every message inside the window becomes ONE newline-joined prompt.
     const reply = await generateStudentReply({
       phoneNumber: entry.phoneNumber,
       studentName: conversation?.studentName ?? entry.studentName,
       batch: conversation?.batch ?? "unknown",
       providerMessageId: entry.providerMessageId,
+      turnText: texts.join("\n"),
     });
     await db
       .update(conversationsTable)
@@ -161,8 +210,10 @@ async function flushDebounced(key: string): Promise<void> {
       entry.phoneNumber,
       reply.text,
     );
+    emitDashboardEvent("message.outbound", { phoneNumber: entry.phoneNumber });
   } catch (error) {
-    // A newer burst may already be queued for this number; it will cover these messages.
+    // Put the burst back so a retry (or a newer burst) still covers these messages.
+    for (const text of texts) await kvPush(bufferKey(key), text, BUFFER_TTL_SECONDS);
     if (debounceQueue.has(key)) return;
     const errDetail = error instanceof Error ? error.message : String(error);
     if (entry.retries < DEBOUNCE_MAX_RETRIES) {
@@ -172,6 +223,7 @@ async function flushDebounced(key: string): Promise<void> {
       );
       scheduleDebouncedReply(key, entry, DEBOUNCE_RETRY_DELAY_MS, entry.retries + 1);
     } else {
+      await kvDrain(bufferKey(key));
       logger.error(
         { err: errDetail, phone: entry.phoneNumber },
         "Debounced reply failed permanently",
@@ -192,6 +244,12 @@ async function processInbound(event: WebhookEvent): Promise<void> {
   const inbound = parseInboundMessage(event.payload);
   if (!inbound?.providerMessageId || !inbound.phoneValue) return;
 
+  // Silent drop: reactions / deleted messages never reach the AI and never produce a reply.
+  if (isSilentInboundType(inbound.type)) {
+    logger.info({ eventId: event.providerEventId, type: inbound.type }, "Silently dropped system event");
+    return;
+  }
+
   let phoneNumber: string;
   let phoneKey: string;
   try {
@@ -202,13 +260,14 @@ async function processInbound(event: WebhookEvent): Promise<void> {
     return;
   }
 
+  const settings = await getBotSettings();
+
   const [existingConversation] = await db
     .select()
     .from(conversationsTable)
     .where(eq(conversationsTable.phoneNumber, phoneNumber))
     .limit(1);
 
-  const mode = existingConversation?.mode ?? "bot";
   const messageBody = inbound.body || `[WhatsApp ${inbound.type} message]`;
 
   await db
@@ -216,7 +275,7 @@ async function processInbound(event: WebhookEvent): Promise<void> {
     .values({
       phoneNumber,
       studentName: inbound.name,
-      mode,
+      mode: existingConversation?.mode ?? "bot",
       lastMessageAt: event.receivedAt,
     })
     .onConflictDoUpdate({
@@ -240,105 +299,45 @@ async function processInbound(event: WebhookEvent): Promise<void> {
     .returning({ id: conversationMessagesTable.id });
 
   if (!savedInbound) return;
+  emitDashboardEvent("message.inbound", { phoneNumber });
 
-  // SMART HUMAN HANDOFF & 30-MINUTE AUTO-RESET:
-  // If mode === 'human':
-  // - Inspect the timestamp of the last message sent by staff (conversationsTable.lastStaffMessageAt).
-  // - If elapsed time > 30 minutes:
-  //   - Automatically update conversation state: mode = 'bot'.
-  //   - Log: [Auto-Reset] Inactivity threshold (30m) exceeded. Conversation switched back to bot mode.
-  //   - Proceed to process the message through the Gemini AI agent.
-  // - If elapsed time <= 30 minutes:
-  //   - Keep the bot completely silent.
-  //   - Log: [Muted] Human conversation active within 30-minute grace window. Skipping AI response.
-  //   - Terminate processing for this message (do not trigger AI).
-  if (mode === "human") {
-    let lastStaffAt = existingConversation?.lastStaffMessageAt;
-
-    // Fallback: If lastStaffMessageAt wasn't explicitly populated in conversationsTable,
-    // look up the newest outbound staff message in conversationMessagesTable
-    if (!lastStaffAt) {
-      const [lastStaffMessage] = await db
-        .select({ createdAt: conversationMessagesTable.createdAt })
-        .from(conversationMessagesTable)
-        .where(
-          and(
-            eq(conversationMessagesTable.phoneNumber, phoneNumber),
-            eq(conversationMessagesTable.direction, "outbound"),
-            or(
-              isNull(conversationMessagesTable.externalId),
-              sql`${conversationMessagesTable.externalId} NOT LIKE 'almedia_%'`,
-            ),
-          ),
-        )
-        .orderBy(desc(conversationMessagesTable.createdAt))
-        .limit(1);
-
-      if (lastStaffMessage?.createdAt) {
-        lastStaffAt = lastStaffMessage.createdAt;
-      }
-    }
-
-    const elapsedMs = lastStaffAt
-      ? Date.now() - new Date(lastStaffAt).getTime()
-      : Infinity;
-
-    const THIRTY_MINUTES_MS = 30 * 60 * 1000;
-
-    if (elapsedMs > THIRTY_MINUTES_MS) {
-      await db
-        .update(conversationsTable)
-        .set({ mode: "bot" })
-        .where(eq(conversationsTable.phoneNumber, phoneNumber));
-
-      logger.info(
-        {
-          phone: phoneNumber,
-          eventId: event.providerEventId,
-          lastStaffMessageAt: lastStaffAt,
-          minutesElapsed: elapsedMs === Infinity ? "never" : (elapsedMs / (60 * 1000)).toFixed(1),
-        },
-        "[Auto-Reset] Inactivity threshold (30m) exceeded. Conversation switched back to bot mode.",
-      );
-      // Proceed to process the message through the Gemini AI agent!
-    } else {
-      const pending = debounceQueue.get(phoneKey);
-      if (pending) {
-        clearTimeout(pending.timer);
-        debounceQueue.delete(phoneKey);
-      }
-      logger.info(
-        {
-          phone: phoneNumber,
-          eventId: event.providerEventId,
-          lastStaffMessageAt: lastStaffAt,
-          minutesRemaining: ((THIRTY_MINUTES_MS - elapsedMs) / (60 * 1000)).toFixed(1),
-        },
-        "[Muted] Within 30-minute staff interaction window.",
-      );
-      return;
-    }
-  }
-
-  // Media / Audio / Document / Sticker: Discard from AI pipeline to prevent crashes, memory exhaustion and API fees.
-  if (inbound.type !== "text") {
-    await saveOutboundAndSend(
-      `almedia_media_${event.providerEventId}`.slice(0, 120),
-      phoneNumber,
-      NON_TEXT_WARNING_MESSAGE,
-    );
+  // BOT MUTE ENFORCEMENT: Redis sliding lock OR human mode => store only, stay 100% silent.
+  if (await isBotMuted(existingConversation, phoneNumber, settings.handoverTimeoutHours)) {
+    await cancelPendingReply(phoneKey);
     logger.info(
-      { eventId: event.providerEventId, type: inbound.type, phone: phoneNumber },
-      "Non-text inbound WhatsApp message responded with polite text-only warning",
+      { phone: phoneNumber, eventId: event.providerEventId },
+      "[Muted] Admin lock / human mode active. Message stored, Meedi stays silent.",
     );
     return;
   }
 
-  if (!inbound.body) return;
+  if (!settings.enabled) {
+    logger.info({ phone: phoneNumber }, "[Disabled] Meedi is switched off globally. Message stored only.");
+    return;
+  }
+
+  // Media / voice / documents (or empty text): stored for the office, never answered by the bot.
+  if (inbound.type !== "text" || !inbound.body) {
+    logger.info(
+      { eventId: event.providerEventId, type: inbound.type, phone: phoneNumber },
+      "Non-text message stored silently",
+    );
+    return;
+  }
 
   const age = Date.now() - event.receivedAt.getTime();
   if (age > WHATSAPP_SESSION_MS) {
     logger.info({ eventId: event.providerEventId }, "Skipped reply outside the WhatsApp service window");
+    return;
+  }
+
+  // CLOSING / ACKNOWLEDGEMENT FILTER: log silently, never call the LLM.
+  if (CLOSING_REGEX.test(inbound.body.trim())) {
+    await db
+      .update(conversationMessagesTable)
+      .set({ deliveryStatus: "closed_silently" })
+      .where(eq(conversationMessagesTable.id, savedInbound.id));
+    logger.info({ phone: phoneNumber, eventId: event.providerEventId }, "Closing message logged silently; no reply");
     return;
   }
 
@@ -354,12 +353,7 @@ async function processInbound(event: WebhookEvent): Promise<void> {
       ),
     );
   if (todayCount > DAILY_MESSAGE_LIMIT) {
-    // Bypass the LLM entirely. Notify once (on the first excess message) to avoid spamming.
-    const pending = debounceQueue.get(phoneKey);
-    if (pending) {
-      clearTimeout(pending.timer);
-      debounceQueue.delete(phoneKey);
-    }
+    await cancelPendingReply(phoneKey);
     if (todayCount === DAILY_MESSAGE_LIMIT + 1) {
       await saveOutboundAndSend(
         `almedia_${event.providerEventId}`.slice(0, 120),
@@ -370,7 +364,8 @@ async function processInbound(event: WebhookEvent): Promise<void> {
     return;
   }
 
-  // Debounce: (re)start the window; the reply covers every message that arrives within it.
+  // 6-second burst buffer: append this message, (re)start the window.
+  await kvPush(bufferKey(phoneKey), inbound.body, BUFFER_TTL_SECONDS);
   scheduleDebouncedReply(phoneKey, {
     phoneNumber,
     studentName: inbound.name,
@@ -378,7 +373,6 @@ async function processInbound(event: WebhookEvent): Promise<void> {
     lastMessageDbId: savedInbound.id,
   });
 
-  // Display WhatsApp typing indicator immediately upon debouncing
   void sendWhatsAppTyping(phoneNumber, inbound.providerMessageId).catch(() => {});
 }
 
@@ -425,6 +419,44 @@ async function claimNextEvent(): Promise<WebhookEvent | undefined> {
   return claimed;
 }
 
+/** Shadow Learning Queue: pairs the student's last question with a staff reply (never auto-consumed by the AI). */
+export async function captureShadowLearning(phoneNumber: string, staffBody: string): Promise<void> {
+  if (!staffBody || staffBody.startsWith("[WhatsApp ") || staffBody.trim().length <= 1) return;
+  try {
+    const [lastInbound] = await db
+      .select({ body: conversationMessagesTable.body })
+      .from(conversationMessagesTable)
+      .where(
+        and(
+          eq(conversationMessagesTable.phoneNumber, phoneNumber),
+          eq(conversationMessagesTable.direction, "inbound"),
+        ),
+      )
+      .orderBy(desc(conversationMessagesTable.createdAt))
+      .limit(1);
+
+    if (
+      lastInbound?.body &&
+      !lastInbound.body.startsWith("[WhatsApp ") &&
+      lastInbound.body.trim().length > 1
+    ) {
+      await db.insert(suggestedKnowledgeItemsTable).values({
+        sourceConversationId: phoneNumber,
+        studentQuestion: lastInbound.body.trim(),
+        humanStaffResponse: staffBody.trim(),
+        suggestedCategory: "faq",
+        status: "pending",
+      });
+      logger.info(
+        { phone: phoneNumber },
+        "[Shadow Learning] Captured student question and staff response into suggested_knowledge_items",
+      );
+    }
+  } catch (err) {
+    logger.warn({ err, phone: phoneNumber }, "Failed to record shadow learning suggestion");
+  }
+}
+
 async function processOutboundOrUpdate(event: WebhookEvent): Promise<void> {
   const staffMsg = parseStaffOutboundMessage(event.payload);
   if (!staffMsg) return;
@@ -438,16 +470,24 @@ async function processOutboundOrUpdate(event: WebhookEvent): Promise<void> {
     return;
   }
 
-  // Cancel any pending debounce timer for this student so bot stays completely silent
-  const pending = debounceQueue.get(phoneKey);
-  if (pending) {
-    clearTimeout(pending.timer);
-    debounceQueue.delete(phoneKey);
+  // Admin reaction: a release emoji hands the chat back to Meedi; any other reaction is ignored.
+  if (staffMsg.type === "reaction") {
+    if (staffMsg.reactionEmoji && RELEASE_EMOJIS.includes(staffMsg.reactionEmoji)) {
+      await releaseToBot(phoneNumber);
+      logger.info(
+        { phone: phoneNumber, emoji: staffMsg.reactionEmoji },
+        "[Release] Admin reaction released the conversation back to bot mode",
+      );
+    }
+    return;
   }
+
+  // Cancel any pending reply for this student so the bot stays completely silent.
+  await cancelPendingReply(phoneKey);
 
   const now = staffMsg.sentAt || new Date();
 
-  // If this message was already recorded in conversationMessagesTable, just update delivery status if needed
+  // Already recorded (status update webhook): only refresh delivery status, no new lock activity.
   if (staffMsg.providerMessageId) {
     const [existing] = await db
       .select({ id: conversationMessagesTable.id })
@@ -466,26 +506,8 @@ async function processOutboundOrUpdate(event: WebhookEvent): Promise<void> {
     }
   }
 
-  // Whenever an outbound message is dispatched to a student (either from the WhatsApp Business mobile app or Admin Dashboard):
-  // Update the student's conversation record:
-  // - mode = 'human'
-  // - last_staff_message_at = new Date()
-  await db
-    .insert(conversationsTable)
-    .values({
-      phoneNumber,
-      mode: "human",
-      lastStaffMessageAt: now,
-      lastMessageAt: now,
-    })
-    .onConflictDoUpdate({
-      target: conversationsTable.phoneNumber,
-      set: {
-        mode: "human",
-        lastStaffMessageAt: now,
-        lastMessageAt: sql`greatest(${conversationsTable.lastMessageAt}, ${now})`,
-      },
-    });
+  // Manual admin message (text / voice / image / document): mode=human + rolling 4h lock reset.
+  await lockForAdmin(phoneNumber, now);
 
   if (staffMsg.providerMessageId) {
     await db
@@ -501,55 +523,14 @@ async function processOutboundOrUpdate(event: WebhookEvent): Promise<void> {
       })
       .onConflictDoNothing();
   }
+  emitDashboardEvent("message.outbound", { phoneNumber });
 
   logger.info(
-    { phone: phoneNumber, providerMessageId: staffMsg.providerMessageId },
-    "Staff outbound message tracked: mode set to 'human', last_staff_message_at updated",
+    { phone: phoneNumber, providerMessageId: staffMsg.providerMessageId, type: staffMsg.type },
+    "[Admin Lock] Manual admin message tracked: mode=human, sliding lock refreshed",
   );
 
-  // Shadow Learning Queue: Capture Q&A pair when staff replies to a student
-  if (
-    staffMsg.body &&
-    !staffMsg.body.startsWith("[WhatsApp ") &&
-    staffMsg.body.trim().length > 1
-  ) {
-    try {
-      const [lastInbound] = await db
-        .select({ body: conversationMessagesTable.body })
-        .from(conversationMessagesTable)
-        .where(
-          and(
-            eq(conversationMessagesTable.phoneNumber, phoneNumber),
-            eq(conversationMessagesTable.direction, "inbound"),
-          ),
-        )
-        .orderBy(desc(conversationMessagesTable.createdAt))
-        .limit(1);
-
-      if (
-        lastInbound?.body &&
-        !lastInbound.body.startsWith("[WhatsApp ") &&
-        lastInbound.body.trim().length > 1
-      ) {
-        await db.insert(suggestedKnowledgeItemsTable).values({
-          sourceConversationId: phoneNumber,
-          studentQuestion: lastInbound.body.trim(),
-          humanStaffResponse: staffMsg.body.trim(),
-          suggestedCategory: "faq",
-          status: "pending",
-        });
-        logger.info(
-          { phone: phoneNumber },
-          "[Shadow Learning] Captured student question and staff response into suggested_knowledge_items",
-        );
-      }
-    } catch (err) {
-      logger.warn(
-        { err, phone: phoneNumber },
-        "Failed to record shadow learning suggestion",
-      );
-    }
-  }
+  await captureShadowLearning(phoneNumber, staffMsg.body);
 }
 
 async function processOneEvent(): Promise<boolean> {

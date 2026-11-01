@@ -76,7 +76,21 @@ export interface ParsedStaffOutboundMessage {
   externalId?: string;
   sentAt?: Date;
   status?: string;
+  /** WhatsApp message type (text, image, audio, document, reaction, ...). */
+  type: string;
+  /** Emoji of an admin reaction (type === "reaction"). */
+  reactionEmoji?: string;
 }
+
+/** Inbound event types that must never reach the AI or produce any reply. */
+const SILENT_INBOUND_TYPES = new Set(["reaction", "revoked"]);
+
+export function isSilentInboundType(type: string): boolean {
+  return SILENT_INBOUND_TYPES.has(type);
+}
+
+/** Emojis an admin can react with to hand a chat back to the bot. */
+export const RELEASE_EMOJIS = ["✅", "🤖"];
 
 export function parseStaffOutboundMessage(
   payload: JsonObject,
@@ -87,6 +101,10 @@ export function parseStaffOutboundMessage(
   const to = typeof message.to === "string" ? message.to : "";
   if (!to) return undefined;
 
+  const type = typeof message.type === "string" ? message.type : "unknown";
+  // Automated broadcast / marketing templates are not manual admin interruptions.
+  if (type === "template") return undefined;
+
   const externalId = typeof message.externalId === "string" ? message.externalId : "";
   // Outbound messages dispatched by the bot always use externalId starting with almedia_
   if (externalId && externalId.startsWith("almedia_")) {
@@ -94,10 +112,12 @@ export function parseStaffOutboundMessage(
   }
 
   const text = asJsonObject(message.text);
+  const reaction = asJsonObject(message.reaction);
+  const reactionEmoji = typeof reaction?.emoji === "string" ? reaction.emoji : undefined;
   const body =
     typeof text?.body === "string"
       ? text.body.trim().slice(0, 4000)
-      : `[WhatsApp ${message.type || "outbound"} message]`;
+      : `[WhatsApp ${type} message]`;
 
   const providerMessageId =
     typeof message.wamid === "string"
@@ -123,5 +143,7 @@ export function parseStaffOutboundMessage(
     externalId: externalId || undefined,
     sentAt: Number.isNaN(sentAt.getTime()) ? new Date() : sentAt,
     status,
+    type,
+    reactionEmoji,
   };
 }

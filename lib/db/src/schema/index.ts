@@ -6,3 +6,4 @@ export * from "./dynamic-content";
 export * from "./recording-requests";
 export * from "./webhook-events";
 export * from "./suggested-knowledge";
+export * from "./bot-settings";

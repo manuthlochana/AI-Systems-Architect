@@ -3,7 +3,7 @@ import { ReceiveWhatsAppWebhookResponse } from "@workspace/api-zod";
 import { db, webhookEventsTable } from "@workspace/db";
 import { isYCloudConfigured } from "../lib/ycloud";
 import { verifyYCloudSignature } from "../lib/webhook-signature";
-import { isGroupChatEvent } from "../lib/whatsapp-event";
+import { isGroupChatEvent, isSilentInboundType, parseInboundMessage } from "../lib/whatsapp-event";
 import { triggerImmediateWorker } from "../lib/webhook-worker";
 
 const router: IRouter = Router();
@@ -73,6 +73,16 @@ router.post("/webhook/whatsapp", async (req, res): Promise<void> => {
   if (isGroupChatEvent(event)) {
     res.json(ReceiveWhatsAppWebhookResponse.parse({ accepted: false }));
     return;
+  }
+
+  // Silent drop: reactions and deleted (revoked) messages are acknowledged with HTTP 200
+  // and never stored, queued, or answered.
+  if (eventType === "whatsapp.inbound_message.received") {
+    const inbound = parseInboundMessage(event);
+    if (inbound && isSilentInboundType(inbound.type)) {
+      res.json(ReceiveWhatsAppWebhookResponse.parse({ accepted: false }));
+      return;
+    }
   }
 
   try {

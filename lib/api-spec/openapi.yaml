@@ -576,7 +576,8 @@ components:
         lastMessageAt: { type: string, format: date-time }
         createdAt: { type: string, format: date-time }
         lastMessage: { type: ["string", "null"] }
-      required: [phoneNumber, batch, studentType, mode, lastMessageAt, createdAt]
+        chatStatus: { type: string, enum: [bot, needs_attention, admin_locked] }
+      required: [phoneNumber, batch, studentType, mode, lastMessageAt, createdAt, chatStatus]
     ConversationModeInput:
       type: object
       properties:

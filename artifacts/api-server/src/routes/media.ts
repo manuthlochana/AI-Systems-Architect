@@ -63,12 +63,35 @@ import {
 } from "../lib/spreadsheet";
 import { isYCloudConfigured, sendYCloudText } from "../lib/ycloud";
 import { readKnowledgeBase, writeKnowledgeBase } from "../lib/ai-agent";
+import { botSettingsTable } from "@workspace/db";
+import { DEFAULT_PERSONA, getBotSettings } from "../lib/bot-settings";
+import { lockForAdmin, releaseToBot } from "../lib/conversation-state";
+import { dashboardEvents, emitDashboardEvent } from "../lib/kv";
+import { captureShadowLearning } from "../lib/webhook-worker";
 
 const router: IRouter = Router();
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
 
+type ChatStatus = "bot" | "needs_attention" | "admin_locked";
+
+function chatStatusOf(
+  row: Pick<typeof conversationsTable.$inferSelect, "mode" | "needsAttention" | "lastAdminActivityAt" | "lastStaffMessageAt">,
+  timeoutHours: number,
+): ChatStatus {
+  if (row.mode !== "human") return "bot";
+  if (row.needsAttention) return "needs_attention";
+  const last = row.lastAdminActivityAt ?? row.lastStaffMessageAt;
+  if (last && Date.now() - new Date(last).getTime() >= timeoutHours * 3600_000) return "bot";
+  return "admin_locked";
+}
+
 function serializeConversation(
-  row: typeof conversationsTable.$inferSelect & { lastMessage: string | null },
+  row: Pick<
+    typeof conversationsTable.$inferSelect,
+    | "phoneNumber" | "studentName" | "batch" | "studentType" | "mode" | "lastIntent"
+    | "lastMessageAt" | "createdAt" | "needsAttention" | "lastAdminActivityAt" | "lastStaffMessageAt"
+  > & { lastMessage: string | null },
+  timeoutHours = 4,
 ) {
   return {
     phoneNumber: row.phoneNumber,
@@ -80,7 +103,47 @@ function serializeConversation(
     lastMessageAt: row.lastMessageAt.toISOString(),
     createdAt: row.createdAt.toISOString(),
     lastMessage: row.lastMessage,
+    chatStatus: chatStatusOf(row, timeoutHours),
   };
+}
+
+/** Resolves a dashboard-supplied id (phone in any format) to the stored conversation phone number. */
+async function resolveConversationPhone(raw: string): Promise<string | null> {
+  const phone = raw.trim();
+  const [found] = await db
+    .select({ phoneNumber: conversationsTable.phoneNumber })
+    .from(conversationsTable)
+    .where(eq(conversationsTable.phoneNumber, phone))
+    .limit(1);
+  if (found) return found.phoneNumber;
+  const digits = phone.replace(/\D/g, "").slice(-9);
+  if (digits.length !== 9) return null;
+  const [byDigits] = await db
+    .select({ phoneNumber: conversationsTable.phoneNumber })
+    .from(conversationsTable)
+    .where(sql`right(regexp_replace(${conversationsTable.phoneNumber}, '\\D', '', 'g'), 9) = ${digits}`)
+    .limit(1);
+  return byDigits?.phoneNumber ?? null;
+}
+
+async function conversationWithLastMessage(phoneNumber: string) {
+  const [conversation] = await db
+    .select()
+    .from(conversationsTable)
+    .where(eq(conversationsTable.phoneNumber, phoneNumber))
+    .limit(1);
+  if (!conversation) return null;
+  const [lastMessage] = await db
+    .select({ body: conversationMessagesTable.body })
+    .from(conversationMessagesTable)
+    .where(eq(conversationMessagesTable.phoneNumber, phoneNumber))
+    .orderBy(desc(conversationMessagesTable.createdAt))
+    .limit(1);
+  const settings = await getBotSettings();
+  return serializeConversation(
+    { ...conversation, lastMessage: lastMessage?.body ?? null },
+    settings.handoverTimeoutHours,
+  );
 }
 
 function serializeDelivery(row: typeof tuteDeliveriesTable.$inferSelect) {
@@ -225,6 +288,9 @@ router.get("/conversations", requireAdmin, async (req, res): Promise<void> => {
       lastIntent: conversationsTable.lastIntent,
       lastMessageAt: conversationsTable.lastMessageAt,
       createdAt: conversationsTable.createdAt,
+      needsAttention: conversationsTable.needsAttention,
+      lastAdminActivityAt: conversationsTable.lastAdminActivityAt,
+      lastStaffMessageAt: conversationsTable.lastStaffMessageAt,
       lastMessage: sql<string | null>`(
         select ${conversationMessagesTable.body}
         from ${conversationMessagesTable}
@@ -242,7 +308,12 @@ router.get("/conversations", requireAdmin, async (req, res): Promise<void> => {
     .orderBy(desc(conversationsTable.lastMessageAt))
     .limit(query.data.limit);
 
-  res.json(GetConversationsResponse.parse(rows.map(serializeConversation)));
+  const settings = await getBotSettings();
+  res.json(
+    GetConversationsResponse.parse(
+      rows.map((row) => serializeConversation(row, settings.handoverTimeoutHours)),
+    ),
+  );
 });
 
 router.patch(
@@ -273,18 +344,11 @@ router.patch(
       res.status(404).json({ error: "Conversation not found" });
       return;
     }
-    const [lastMessage] = await db
-      .select({ body: conversationMessagesTable.body })
-      .from(conversationMessagesTable)
-      .where(eq(conversationMessagesTable.phoneNumber, conversation.phoneNumber))
-      .orderBy(desc(conversationMessagesTable.createdAt))
-      .limit(1);
-
-    res.json(
-      SetConversationModeResponse.parse(
-        serializeConversation({ ...conversation, lastMessage: lastMessage?.body ?? null }),
-      ),
-    );
+    // Keep the Redis admin lock + attention flag consistent with the mode switch.
+    if (body.data.mode === "bot") await releaseToBot(conversation.phoneNumber);
+    else await lockForAdmin(conversation.phoneNumber);
+    const refreshed = await conversationWithLastMessage(conversation.phoneNumber);
+    res.json(SetConversationModeResponse.parse(refreshed));
   },
 );
 
@@ -336,18 +400,11 @@ router.post(
       return;
     }
 
-    const [lastMessage] = await db
-      .select({ body: conversationMessagesTable.body })
-      .from(conversationMessagesTable)
-      .where(eq(conversationMessagesTable.phoneNumber, conversation.phoneNumber))
-      .orderBy(desc(conversationMessagesTable.createdAt))
-      .limit(1);
-
-    res.json(
-      SetConversationModeResponse.parse(
-        serializeConversation({ ...conversation, lastMessage: lastMessage?.body ?? null }),
-      ),
-    );
+    // Keep the Redis admin lock + attention flag consistent with the mode switch.
+    if (mode === "bot") await releaseToBot(conversation.phoneNumber);
+    else await lockForAdmin(conversation.phoneNumber);
+    const refreshed = await conversationWithLastMessage(conversation.phoneNumber);
+    res.json(SetConversationModeResponse.parse(refreshed));
   },
 );
 
@@ -757,6 +814,185 @@ router.post("/admin/suggestions/:id/reject", requireAdmin, async (req, res): Pro
   res.json(RejectSuggestedKnowledgeItemResponse.parse(serializeSuggestion(updated)));
 });
 
+// ---------------------------------------------------------------------------
+// Unified inbox: thread view, dashboard reply, handover, bot settings, live events
+// ---------------------------------------------------------------------------
+
+router.get("/conversations/:phoneNumber/messages", requireAdmin, async (req, res): Promise<void> => {
+  const phone = await resolveConversationPhone(String(req.params.phoneNumber ?? ""));
+  if (!phone) {
+    res.status(404).json({ error: "Conversation not found" });
+    return;
+  }
+  const rows = await db
+    .select()
+    .from(conversationMessagesTable)
+    .where(eq(conversationMessagesTable.phoneNumber, phone))
+    .orderBy(desc(conversationMessagesTable.createdAt))
+    .limit(200);
+  const conversation = await conversationWithLastMessage(phone);
+  res.json({
+    conversation,
+    messages: rows.reverse().map((row) => ({
+      id: row.id,
+      direction: row.direction,
+      body: row.body,
+      deliveryStatus: row.deliveryStatus,
+      createdAt: row.createdAt.toISOString(),
+      sender:
+        row.direction === "inbound"
+          ? "student"
+          : row.externalId?.startsWith("almedia_dash_")
+            ? "admin"
+            : row.externalId?.startsWith("almedia_")
+              ? "meedi"
+              : "admin",
+    })),
+  });
+});
+
+router.post("/conversations/:phoneNumber/send-message", requireAdmin, async (req, res): Promise<void> => {
+  const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
+  if (!text || text.length > 4000) {
+    res.status(400).json({ error: "Message text is required (max 4000 characters)." });
+    return;
+  }
+  const phone = await resolveConversationPhone(String(req.params.phoneNumber ?? ""));
+  if (!phone) {
+    res.status(404).json({ error: "Conversation not found" });
+    return;
+  }
+  if (!process.env.YCLOUD_API_KEY || !process.env.YCLOUD_FROM_NUMBER) {
+    res.status(503).json({ error: "YCloud sending is not configured." });
+    return;
+  }
+
+  const externalId = `almedia_dash_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  let providerMessageId: string | null;
+  try {
+    providerMessageId = await sendYCloudText(phone, text, externalId);
+  } catch (error) {
+    req.log.error({ err: error instanceof Error ? error.message : String(error) }, "Dashboard reply failed");
+    res.status(502).json({ error: "WhatsApp delivery failed. Please try again." });
+    return;
+  }
+
+  const [saved] = await db
+    .insert(conversationMessagesTable)
+    .values({
+      phoneNumber: phone,
+      direction: "outbound",
+      body: text,
+      externalId,
+      providerMessageId: providerMessageId ?? undefined,
+      deliveryStatus: "sent",
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  // Dashboard reply = admin interruption: human mode + rolling lock refresh.
+  await lockForAdmin(phone);
+  await captureShadowLearning(phone, text);
+  emitDashboardEvent("message.outbound", { phoneNumber: phone });
+
+  res.json({
+    ok: true,
+    message: saved
+      ? { id: saved.id, direction: saved.direction, body: saved.body, deliveryStatus: saved.deliveryStatus, createdAt: saved.createdAt.toISOString(), sender: "admin" }
+      : null,
+    conversation: await conversationWithLastMessage(phone),
+  });
+});
+
+router.post("/conversations/:phoneNumber/handover-to-bot", requireAdmin, async (req, res): Promise<void> => {
+  const phone = await resolveConversationPhone(String(req.params.phoneNumber ?? ""));
+  if (!phone) {
+    res.status(404).json({ error: "Conversation not found" });
+    return;
+  }
+  await releaseToBot(phone);
+  res.json({ ok: true, conversation: await conversationWithLastMessage(phone) });
+});
+
+function serializeBotSettings(row: typeof botSettingsTable.$inferSelect) {
+  return {
+    systemPrompt: row.systemPrompt,
+    enabled: row.enabled,
+    temperature: row.temperature,
+    handoverTimeoutHours: row.handoverTimeoutHours,
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+router.get("/admin/bot-settings", requireAdmin, async (_req, res): Promise<void> => {
+  const settings = await getBotSettings();
+  res.json({
+    ...serializeBotSettings(settings),
+    // Empty prompt means "use the built-in default"; show it so admins can edit from a baseline.
+    defaultPrompt: DEFAULT_PERSONA,
+  });
+});
+
+router.put("/admin/bot-settings", requireAdmin, async (req, res): Promise<void> => {
+  const body = req.body ?? {};
+  const patch: Partial<typeof botSettingsTable.$inferInsert> = {};
+  if (body.systemPrompt !== undefined) {
+    if (typeof body.systemPrompt !== "string" || body.systemPrompt.length > 20000) {
+      res.status(400).json({ error: "systemPrompt must be a string (max 20000 characters)." });
+      return;
+    }
+    patch.systemPrompt = body.systemPrompt;
+  }
+  if (body.enabled !== undefined) {
+    if (typeof body.enabled !== "boolean") {
+      res.status(400).json({ error: "enabled must be a boolean." });
+      return;
+    }
+    patch.enabled = body.enabled;
+  }
+  if (body.temperature !== undefined) {
+    if (typeof body.temperature !== "number" || body.temperature < 0 || body.temperature > 2) {
+      res.status(400).json({ error: "temperature must be a number between 0 and 2." });
+      return;
+    }
+    patch.temperature = body.temperature;
+  }
+  if (body.handoverTimeoutHours !== undefined) {
+    if (!Number.isInteger(body.handoverTimeoutHours) || body.handoverTimeoutHours < 1 || body.handoverTimeoutHours > 168) {
+      res.status(400).json({ error: "handoverTimeoutHours must be a whole number between 1 and 168." });
+      return;
+    }
+    patch.handoverTimeoutHours = body.handoverTimeoutHours;
+  }
+
+  await getBotSettings(); // ensure the singleton row exists
+  const [saved] = await db
+    .update(botSettingsTable)
+    .set(patch)
+    .where(eq(botSettingsTable.id, 1))
+    .returning();
+  emitDashboardEvent("settings.updated");
+  res.json({ ...serializeBotSettings(saved), defaultPrompt: DEFAULT_PERSONA });
+});
+
+/** Server-sent events: pushes inbound/outbound/escalation events to open dashboards. */
+router.get("/admin/events", requireAdmin, (req, res): void => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.write(": connected\n\n");
+  const onEvent = (event: unknown) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+  dashboardEvents.on("event", onEvent);
+  const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
+  req.on("close", () => {
+    clearInterval(ping);
+    dashboardEvents.off("event", onEvent);
+  });
+});
+
 router.get("/recording-requests", requireAdmin, async (req, res): Promise<void> => {
   const query = GetRecordingRequestsQueryParams.safeParse(req.query);
   if (!query.success) {
@@ -845,7 +1081,7 @@ router.post(
       return;
     }
 
-    const message = `ආයුබෝවන් පුතේ, ඔබ ඉල්ලූ ${request.requestedDate} ${request.className && request.className !== "Unknown" ? request.className : request.classType ?? ""} පන්තියේ පටිගත කිරීම මෙන්න: ${body.data.zoomLink} ස්තූතියි පුතේ.`;
+    const message = `ආයුබෝවන්, ඔබ ඉල්ලූ ${request.requestedDate} ${request.className && request.className !== "Unknown" ? request.className : request.classType ?? ""} පන්තියේ පටිගත කිරීම මෙන්න: ${body.data.zoomLink} ස්තූතියි.`;
     let providerMessageId: string | null;
     try {
       providerMessageId = await sendYCloudText(

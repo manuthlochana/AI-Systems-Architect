@@ -11,6 +11,7 @@ export * from './adminSession';
 export * from './adminStatus';
 export * from './conversation';
 export * from './conversationBatch';
+export * from './conversationChatStatus';
 export * from './conversationMode';
 export * from './conversationModeInput';
 export * from './conversationModeInputMode';

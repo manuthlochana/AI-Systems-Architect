@@ -1,5 +1,5 @@
 import { createInsertSchema } from "drizzle-zod";
-import { pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { boolean, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 import { z } from "zod/v4";
 import { batchEnum, conversationModeEnum, studentTypeEnum } from "./enums";
 
@@ -11,6 +11,9 @@ export const conversationsTable = pgTable("conversations", {
   mode: conversationModeEnum("mode").notNull().default("bot"),
   lastIntent: text("last_intent"),
   lastStaffMessageAt: timestamp("last_staff_message_at", { withTimezone: true }),
+  lastAdminActivityAt: timestamp("last_admin_activity_at", { withTimezone: true }),
+  needsAttention: boolean("needs_attention").notNull().default(false),
+  escalationReason: text("escalation_reason"),
   lastMessageAt: timestamp("last_message_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

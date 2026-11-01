@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { ConversationBatch } from './conversationBatch';
+import type { ConversationChatStatus } from './conversationChatStatus';
 import type { ConversationMode } from './conversationMode';
 import type { ConversationStudentType } from './conversationStudentType';
 
@@ -22,4 +23,5 @@ export interface Conversation {
   createdAt: Date;
   /** @nullable */
   lastMessage?: string | null;
+  chatStatus: ConversationChatStatus;
 }

@@ -92,7 +92,8 @@ export const GetConversationsResponseItem = zod.object({
   "lastIntent": zod.string().nullish(),
   "lastMessageAt": zod.coerce.date(),
   "createdAt": zod.coerce.date(),
-  "lastMessage": zod.string().nullish()
+  "lastMessage": zod.string().nullish(),
+  "chatStatus": zod.enum(['bot', 'needs_attention', 'admin_locked'])
 })
 export const GetConversationsResponse = zod.array(GetConversationsResponseItem)
 
@@ -117,7 +118,8 @@ export const SetConversationModeResponse = zod.object({
   "lastIntent": zod.string().nullish(),
   "lastMessageAt": zod.coerce.date(),
   "createdAt": zod.coerce.date(),
-  "lastMessage": zod.string().nullish()
+  "lastMessage": zod.string().nullish(),
+  "chatStatus": zod.enum(['bot', 'needs_attention', 'admin_locked'])
 })
 
 
