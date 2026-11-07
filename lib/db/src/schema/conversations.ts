@@ -1,7 +1,15 @@
 import { createInsertSchema } from "drizzle-zod";
-import { boolean, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { boolean, integer, pgTable, text, timestamp, varchar } from "drizzle-orm/pg-core";
 import { z } from "zod/v4";
-import { batchEnum, conversationModeEnum, studentTypeEnum } from "./enums";
+import {
+  batchEnum,
+  conversationModeEnum,
+  genderEnum,
+  onboardingStatusEnum,
+  physicalLocationEnum,
+  studentClassTypeEnum,
+  studentTypeEnum,
+} from "./enums";
 
 export const conversationsTable = pgTable("conversations", {
   phoneNumber: text("phone_number").primaryKey(),
@@ -9,6 +17,14 @@ export const conversationsTable = pgTable("conversations", {
   batch: batchEnum("batch").notNull().default("unknown"),
   studentType: studentTypeEnum("student_type").notNull().default("new"),
   mode: conversationModeEnum("mode").notNull().default("bot"),
+  // Permanent student profile (phone_number is the primary key / unique identifier).
+  gender: genderEnum("gender").notNull().default("unknown"),
+  examYear: integer("exam_year"),
+  hometownDistrict: varchar("hometown_district", { length: 100 }),
+  otherSubjects: varchar("other_subjects", { length: 200 }),
+  classType: studentClassTypeEnum("class_type").notNull().default("undecided"),
+  physicalLocation: physicalLocationEnum("physical_location"),
+  onboardingStatus: onboardingStatusEnum("onboarding_status").notNull().default("new_lead"),
   lastIntent: text("last_intent"),
   lastStaffMessageAt: timestamp("last_staff_message_at", { withTimezone: true }),
   lastAdminActivityAt: timestamp("last_admin_activity_at", { withTimezone: true }),

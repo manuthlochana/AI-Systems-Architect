@@ -35,3 +35,22 @@ export const suggestionStatusEnum = pgEnum("suggestion_status", [
   "approved",
   "rejected",
 ]);
+
+// --- Student profile / onboarding (permanent memory, keyed by WhatsApp phone number) ---
+export const genderEnum = pgEnum("student_gender", ["male", "female", "unknown"]);
+export const studentClassTypeEnum = pgEnum("student_class_type", [
+  "online",
+  "physical",
+  "undecided",
+]);
+export const physicalLocationEnum = pgEnum("student_physical_location", [
+  "matara_sipyana",
+  "tangalle_maarga",
+  "galle_ics",
+]);
+export const onboardingStatusEnum = pgEnum("student_onboarding_status", [
+  "new_lead",
+  "profiling",
+  "payment_pending",
+  "onboarded",
+]);
