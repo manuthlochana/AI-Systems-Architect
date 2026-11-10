@@ -35,7 +35,6 @@ export type RecentActivityKind = typeof RecentActivityKind[keyof typeof RecentAc
 
 export const RecentActivityKind = {
   conversation: 'conversation',
-  delivery: 'delivery',
   recording: 'recording',
   content: 'content',
 } as const;
@@ -50,7 +49,6 @@ export interface RecentActivity {
 export interface DashboardSummary {
   humanQueueCount: number;
   pendingRecordingCount: number;
-  deliveriesThisMonth: number;
   recentConversationCount: number;
   recentActivity: RecentActivity[];
 }
@@ -117,124 +115,6 @@ export interface ConversationModeInput {
   mode: ConversationModeInputMode;
 }
 
-export type TuteDeliveryStatus = typeof TuteDeliveryStatus[keyof typeof TuteDeliveryStatus];
-
-
-export const TuteDeliveryStatus = {
-  Dispatched: 'Dispatched',
-  Delivered: 'Delivered',
-  Returned: 'Returned',
-} as const;
-
-export type TuteDeliveryDeliveryWave = typeof TuteDeliveryDeliveryWave[keyof typeof TuteDeliveryDeliveryWave];
-
-
-export const TuteDeliveryDeliveryWave = {
-  Wave_1: 'Wave 1',
-  Wave_2: 'Wave 2',
-  Wave_3: 'Wave 3',
-  Wave_4: 'Wave 4',
-} as const;
-
-export type TuteDeliveryItemType = typeof TuteDeliveryItemType[keyof typeof TuteDeliveryItemType];
-
-
-export const TuteDeliveryItemType = {
-  Monthly_Tute: 'Monthly Tute',
-  Special_Book: 'Special Book',
-} as const;
-
-export interface TuteDelivery {
-  id: number;
-  phoneNumber: string;
-  /** @nullable */
-  studentName?: string | null;
-  month: string;
-  trackingNumber: string;
-  /** @nullable */
-  address?: string | null;
-  status: TuteDeliveryStatus;
-  deliveryWave: TuteDeliveryDeliveryWave;
-  itemType: TuteDeliveryItemType;
-  createdAt: string;
-}
-
-export type TuteDeliveryImportInputDeliveryWave = typeof TuteDeliveryImportInputDeliveryWave[keyof typeof TuteDeliveryImportInputDeliveryWave];
-
-
-export const TuteDeliveryImportInputDeliveryWave = {
-  Wave_1: 'Wave 1',
-  Wave_2: 'Wave 2',
-  Wave_3: 'Wave 3',
-  Wave_4: 'Wave 4',
-} as const;
-
-export type TuteDeliveryImportInputItemType = typeof TuteDeliveryImportInputItemType[keyof typeof TuteDeliveryImportInputItemType];
-
-
-export const TuteDeliveryImportInputItemType = {
-  Monthly_Tute: 'Monthly Tute',
-  Special_Book: 'Special Book',
-} as const;
-
-export interface TuteDeliveryColumnMap {
-  /**
-     * @minLength 1
-     * @maxLength 200
-     */
-  phoneNumber: string;
-  /**
-     * @minLength 1
-     * @maxLength 200
-     */
-  studentName: string;
-  /**
-     * @minLength 1
-     * @maxLength 200
-     */
-  trackingNumber: string;
-  /**
-     * @minLength 1
-     * @maxLength 200
-     */
-  address: string;
-}
-
-export interface TuteDeliveryImportInput {
-  /** @pattern ^\d{4}-\d{2}$ */
-  month: string;
-  deliveryWave: TuteDeliveryImportInputDeliveryWave;
-  itemType: TuteDeliveryImportInputItemType;
-  /** @maxLength 255 */
-  fileName: string;
-  /** @maxLength 15000000 */
-  fileData: string;
-  columnMap: TuteDeliveryColumnMap;
-}
-
-export interface TuteDeliveryFileInput {
-  /** @maxLength 255 */
-  fileName: string;
-  /** @maxLength 15000000 */
-  fileData: string;
-}
-
-export type TuteDeliveryInspectionPreviewRowsItem = {[key: string]: string};
-
-export interface TuteDeliveryInspection {
-  columns: string[];
-  previewRows: TuteDeliveryInspectionPreviewRowsItem[];
-  rowCount: number;
-}
-
-export interface TuteDeliveryImportResult {
-  processed: number;
-  inserted: number;
-  updated: number;
-  skipped: number;
-  errors: string[];
-}
-
 export type DynamicContentCategory = typeof DynamicContentCategory[keyof typeof DynamicContentCategory];
 
 
@@ -251,6 +131,8 @@ export interface DynamicContent {
   category: DynamicContentCategory;
   title: string;
   content: string;
+  source?: string;
+  confidence?: number;
   updatedAt: string;
 }
 
@@ -352,6 +234,8 @@ export interface SuggestedKnowledgeItem {
   studentQuestion: string;
   humanStaffResponse: string;
   suggestedCategory: string;
+  confidence?: number;
+  source?: string;
   status: SuggestedKnowledgeItemStatus;
   createdAt: string;
 }
@@ -382,13 +266,6 @@ export const GetConversationsMode = {
   human: 'human',
   all: 'all',
 } as const;
-
-export type GetDeliveriesParams = {
-/**
- * @pattern ^\d{4}-\d{2}$
- */
-month: string;
-};
 
 export type GetSuggestedKnowledgeItemsParams = {
 status?: GetSuggestedKnowledgeItemsStatus;

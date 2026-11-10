@@ -14,6 +14,8 @@ export interface SuggestedKnowledgeItem {
   studentQuestion: string;
   humanStaffResponse: string;
   suggestedCategory: string;
+  confidence?: number;
+  source?: string;
   status: SuggestedKnowledgeItemStatus;
   createdAt: Date;
 }

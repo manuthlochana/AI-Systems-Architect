@@ -9,6 +9,7 @@ import {
   MapPin,
   MessageCircle,
   RefreshCw,
+  RotateCcw,
   Search,
   Send,
   TriangleAlert,
@@ -176,6 +177,16 @@ export function InboxTab({ conversations, loading }: { conversations: Conversati
     onError: (err) => setError(err instanceof Error ? err.message : 'Failed to hand over'),
   });
 
+  const resetProfileMutation = useMutation({
+    mutationFn: () =>
+      adminFetch(`/conversations/${encodeURIComponent(selected ?? '')}/reset-profile`, { method: 'POST' }),
+    onSuccess: () => {
+      setError('');
+      refresh();
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : 'Failed to reset student profile'),
+  });
+
   const thread = threadQuery.data;
   const conv = thread?.conversation;
   const status: ChatStatus = conv?.chatStatus ?? 'bot';
@@ -320,7 +331,7 @@ export function InboxTab({ conversations, loading }: { conversations: Conversati
                 )}
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <StatusBadge status={status} />
                 <button
                   onClick={() => threadQuery.refetch()}
@@ -328,6 +339,15 @@ export function InboxTab({ conversations, loading }: { conversations: Conversati
                   title="Refresh"
                 >
                   <RefreshCw size={13} className={threadQuery.isFetching ? 'animate-spin' : ''} />
+                </button>
+                <button
+                  onClick={() => resetProfileMutation.mutate()}
+                  disabled={resetProfileMutation.isPending}
+                  className="px-2.5 py-1.5 border border-border bg-muted/40 hover:bg-muted text-foreground rounded-xl text-xs font-semibold disabled:opacity-40 flex items-center gap-1.5 transition-colors"
+                  title="Reset student to new_lead and clear all profiling memory for testing"
+                >
+                  <RotateCcw size={12} className={resetProfileMutation.isPending ? 'animate-spin' : ''} />
+                  Reset Student Profile
                 </button>
                 <button
                   onClick={() => handoverMutation.mutate()}

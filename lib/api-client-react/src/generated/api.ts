@@ -29,18 +29,12 @@ import type {
   DynamicContent,
   DynamicContentInput,
   GetConversationsParams,
-  GetDeliveriesParams,
   GetRecordingRequestsParams,
   GetSuggestedKnowledgeItemsParams,
   HealthStatus,
   RecordingApprovalInput,
   RecordingRequest,
   SuggestedKnowledgeItem,
-  TuteDelivery,
-  TuteDeliveryFileInput,
-  TuteDeliveryImportInput,
-  TuteDeliveryImportResult,
-  TuteDeliveryInspection,
   UpdateSuggestedKnowledgeInput,
   WebhookAcknowledgement,
   WhatsAppWebhookInput
@@ -640,266 +634,6 @@ export const useSetConversationMode = <TError = ErrorType<void>,
       return useMutation(getSetConversationModeMutationOptions(options));
     }
 
-export const getGetDeliveriesUrl = (params: GetDeliveriesParams,) => {
-  const normalizedParams = new URLSearchParams();
-
-  Object.entries(params || {}).forEach(([key, value]) => {
-
-    if (value !== undefined) {
-      normalizedParams.append(key, value === null ? 'null' : String(value))
-    }
-  });
-
-  const stringifiedParams = normalizedParams.toString();
-
-  return stringifiedParams.length > 0 ? `/api/deliveries?${stringifiedParams}` : `/api/deliveries`
-}
-
-/**
- * @summary List tute deliveries for a month
- */
-export const getDeliveries = async (params: GetDeliveriesParams, options?: Parameters<typeof customFetch>[1]): Promise<TuteDelivery[]> => {
-
-  return customFetch<TuteDelivery[]>(getGetDeliveriesUrl(params),
-  {
-    ...options,
-    method: 'GET'
-
-
-  }
-);}
-
-
-
-
-
-export const getGetDeliveriesQueryKey = (params?: GetDeliveriesParams,) => {
-    return [
-    `/api/deliveries`, ...(params ? [params] : [])
-    ] as const;
-    }
-
-
-export const getGetDeliveriesQueryOptions = <TData = Awaited<ReturnType<typeof getDeliveries>>, TError = ErrorType<void>>(params: GetDeliveriesParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getDeliveries>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
-) => {
-
-const {query: queryOptions, request: requestOptions} = options ?? {};
-
-  const queryKey =  queryOptions?.queryKey ?? getGetDeliveriesQueryKey(params);
-
-
-
-    const queryFn: QueryFunction<Awaited<ReturnType<typeof getDeliveries>>> = ({ signal }) => getDeliveries(params, { signal, ...requestOptions });
-
-
-
-
-
-   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getDeliveries>>, TError, TData> & { queryKey: QueryKey }
-}
-
-export type GetDeliveriesQueryResult = NonNullable<Awaited<ReturnType<typeof getDeliveries>>>
-export type GetDeliveriesQueryError = ErrorType<void>
-
-
-/**
- * @summary List tute deliveries for a month
- */
-
-export function useGetDeliveries<TData = Awaited<ReturnType<typeof getDeliveries>>, TError = ErrorType<void>>(
- params: GetDeliveriesParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getDeliveries>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
-
- ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
-
-  const queryOptions = getGetDeliveriesQueryOptions(params,options)
-
-  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
-
-  return withQueryKey(query, queryOptions.queryKey);
-}
-
-
-
-
-
-
-
-export const getImportTuteDeliveriesUrl = () => {
-
-
-
-
-  return `/api/deliveries/import`
-}
-
-/**
- * @summary Import a delivery spreadsheet
- */
-export const importTuteDeliveries = async (tuteDeliveryImportInput: TuteDeliveryImportInput, options?: Parameters<typeof customFetch>[1]): Promise<TuteDeliveryImportResult> => {
-
-    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
-    if (!h) return {};
-    if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Symbol.iterator in h) {
-      return Object.fromEntries(
-        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
-      );
-    }
-    const headers: Record<string, string | readonly string[]> = {};
-    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
-      if (value !== undefined) headers[name] = value;
-    }
-    return headers;
-  };
-return customFetch<TuteDeliveryImportResult>(getImportTuteDeliveriesUrl(),
-  {
-    ...options,
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
-    body: JSON.stringify(tuteDeliveryImportInput)
-  }
-);}
-
-
-
-
-
-export const getImportTuteDeliveriesMutationKey = () => ['importTuteDeliveries'] as const;
-
-export const getImportTuteDeliveriesMutationOptions = <TError = ErrorType<void>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof importTuteDeliveries>>, TError,ImportTuteDeliveriesMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
-): UseMutationOptions<Awaited<ReturnType<typeof importTuteDeliveries>>, TError,ImportTuteDeliveriesMutationVariables, TContext> => {
-
-const mutationKey = getImportTuteDeliveriesMutationKey();
-const {mutation: mutationOptions, request: requestOptions} = options ?
-      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
-      options
-      : {...options, mutation: {...options.mutation, mutationKey}}
-      : {mutation: { mutationKey, }, request: undefined};
-
-
-
-
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof importTuteDeliveries>>, ImportTuteDeliveriesMutationVariables> = (props) => {
-          const {data} = props ?? {};
-
-          return  importTuteDeliveries(data,requestOptions)
-        }
-
-
-
-
-
-
-  return  { mutationFn, ...mutationOptions }}
-
-    export type ImportTuteDeliveriesMutationResult = NonNullable<Awaited<ReturnType<typeof importTuteDeliveries>>>
-    export type ImportTuteDeliveriesMutationBody = BodyType<TuteDeliveryImportInput>
-    export type ImportTuteDeliveriesMutationError = ErrorType<void>
-    export type ImportTuteDeliveriesMutationVariables = {data: BodyType<TuteDeliveryImportInput>}
-
-    /**
- * @summary Import a delivery spreadsheet
- */
-export const useImportTuteDeliveries = <TError = ErrorType<void>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof importTuteDeliveries>>, TError,ImportTuteDeliveriesMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
- ): UseMutationResult<
-        Awaited<ReturnType<typeof importTuteDeliveries>>,
-        TError,
-        ImportTuteDeliveriesMutationVariables,
-        TContext
-      > => {
-      return useMutation(getImportTuteDeliveriesMutationOptions(options));
-    }
-
-export const getInspectTuteDeliveryFileUrl = () => {
-
-
-
-
-  return `/api/deliveries/inspect`
-}
-
-/**
- * @summary Read spreadsheet columns and a short preview
- */
-export const inspectTuteDeliveryFile = async (tuteDeliveryFileInput: TuteDeliveryFileInput, options?: Parameters<typeof customFetch>[1]): Promise<TuteDeliveryInspection> => {
-
-    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
-    if (!h) return {};
-    if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Symbol.iterator in h) {
-      return Object.fromEntries(
-        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
-      );
-    }
-    const headers: Record<string, string | readonly string[]> = {};
-    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
-      if (value !== undefined) headers[name] = value;
-    }
-    return headers;
-  };
-return customFetch<TuteDeliveryInspection>(getInspectTuteDeliveryFileUrl(),
-  {
-    ...options,
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
-    body: JSON.stringify(tuteDeliveryFileInput)
-  }
-);}
-
-
-
-
-
-export const getInspectTuteDeliveryFileMutationKey = () => ['inspectTuteDeliveryFile'] as const;
-
-export const getInspectTuteDeliveryFileMutationOptions = <TError = ErrorType<void>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof inspectTuteDeliveryFile>>, TError,InspectTuteDeliveryFileMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
-): UseMutationOptions<Awaited<ReturnType<typeof inspectTuteDeliveryFile>>, TError,InspectTuteDeliveryFileMutationVariables, TContext> => {
-
-const mutationKey = getInspectTuteDeliveryFileMutationKey();
-const {mutation: mutationOptions, request: requestOptions} = options ?
-      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
-      options
-      : {...options, mutation: {...options.mutation, mutationKey}}
-      : {mutation: { mutationKey, }, request: undefined};
-
-
-
-
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof inspectTuteDeliveryFile>>, InspectTuteDeliveryFileMutationVariables> = (props) => {
-          const {data} = props ?? {};
-
-          return  inspectTuteDeliveryFile(data,requestOptions)
-        }
-
-
-
-
-
-
-  return  { mutationFn, ...mutationOptions }}
-
-    export type InspectTuteDeliveryFileMutationResult = NonNullable<Awaited<ReturnType<typeof inspectTuteDeliveryFile>>>
-    export type InspectTuteDeliveryFileMutationBody = BodyType<TuteDeliveryFileInput>
-    export type InspectTuteDeliveryFileMutationError = ErrorType<void>
-    export type InspectTuteDeliveryFileMutationVariables = {data: BodyType<TuteDeliveryFileInput>}
-
-    /**
- * @summary Read spreadsheet columns and a short preview
- */
-export const useInspectTuteDeliveryFile = <TError = ErrorType<void>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof inspectTuteDeliveryFile>>, TError,InspectTuteDeliveryFileMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
- ): UseMutationResult<
-        Awaited<ReturnType<typeof inspectTuteDeliveryFile>>,
-        TError,
-        InspectTuteDeliveryFileMutationVariables,
-        TContext
-      > => {
-      return useMutation(getInspectTuteDeliveryFileMutationOptions(options));
-    }
-
 export const getGetDynamicContentUrl = () => {
 
 
@@ -1156,7 +890,7 @@ export const getGetSuggestedKnowledgeItemsUrl = (params?: GetSuggestedKnowledgeI
 }
 
 /**
- * @summary List suggested knowledge items captured from staff chats
+ * @summary List autonomous knowledge insights distilled from staff chats
  */
 export const getSuggestedKnowledgeItems = async (params?: GetSuggestedKnowledgeItemsParams, options?: Parameters<typeof customFetch>[1]): Promise<SuggestedKnowledgeItem[]> => {
 
@@ -1203,7 +937,7 @@ export type GetSuggestedKnowledgeItemsQueryError = ErrorType<void>
 
 
 /**
- * @summary List suggested knowledge items captured from staff chats
+ * @summary List autonomous knowledge insights distilled from staff chats
  */
 
 export function useGetSuggestedKnowledgeItems<TData = Awaited<ReturnType<typeof getSuggestedKnowledgeItems>>, TError = ErrorType<void>>(

@@ -12,5 +12,7 @@ export interface DynamicContent {
   category: DynamicContentCategory;
   title: string;
   content: string;
+  source?: string;
+  confidence?: number;
   updatedAt: Date;
 }

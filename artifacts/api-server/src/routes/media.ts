@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { Router, type IRouter } from "express";
 import {
   ApproveRecordingRequestBody,
@@ -12,16 +12,10 @@ import {
   GetConversationsQueryParams,
   GetConversationsResponse,
   GetDashboardSummaryResponse,
-  GetDeliveriesQueryParams,
-  GetDeliveriesResponse,
   DeleteDynamicContentParams,
   GetDynamicContentResponse,
   GetRecordingRequestsQueryParams,
   GetRecordingRequestsResponse,
-  ImportTuteDeliveriesBody,
-  ImportTuteDeliveriesResponse,
-  InspectTuteDeliveryFileBody,
-  InspectTuteDeliveryFileResponse,
   SetConversationModeBody,
   SetConversationModeParams,
   SetConversationModeResponse,
@@ -46,7 +40,6 @@ import {
   dynamicContentTable,
   recordingRequestsTable,
   suggestedKnowledgeItemsTable,
-  tuteDeliveriesTable,
 } from "@workspace/db";
 import {
   clearAdminSessionCookie,
@@ -57,18 +50,12 @@ import {
   requireAdmin,
   setAdminSessionCookie,
 } from "../lib/admin-auth";
-import {
-  deliveryColumnMapFromHeaders,
-  parseSpreadsheet,
-  toPhoneKey,
-} from "../lib/spreadsheet";
 import { isYCloudConfigured, sendYCloudImage, sendYCloudText, uploadYCloudMedia } from "../lib/ycloud";
 import { readKnowledgeBase, writeKnowledgeBase } from "../lib/ai-agent";
 import { botSettingsTable } from "@workspace/db";
 import { DEFAULT_PERSONA, getBotSettings } from "../lib/bot-settings";
 import { lockForAdmin, releaseToBot } from "../lib/conversation-state";
 import { dashboardEvents, emitDashboardEvent } from "../lib/kv";
-import { runBatchCognitiveReflection } from "../lib/reflection";
 import { captureShadowLearning } from "../lib/webhook-worker";
 import { formatMediaMessageBody, parseMediaMessageBody } from "../lib/whatsapp-event";
 
@@ -160,12 +147,13 @@ async function conversationWithLastMessage(phoneNumber: string) {
   };
 }
 
-function serializeDelivery(row: typeof tuteDeliveriesTable.$inferSelect) {
-  return { ...row, createdAt: row.createdAt.toISOString() };
-}
-
 function serializeContent(row: typeof dynamicContentTable.$inferSelect) {
-  return { ...row, updatedAt: row.updatedAt.toISOString() };
+  return {
+    ...row,
+    source: row.source,
+    confidence: row.confidence,
+    updatedAt: row.updatedAt.toISOString(),
+  };
 }
 
 function serializeRecordingRequest(row: typeof recordingRequestsTable.$inferSelect) {
@@ -179,6 +167,8 @@ function serializeSuggestion(row: typeof suggestedKnowledgeItemsTable.$inferSele
     studentQuestion: row.studentQuestion,
     humanStaffResponse: row.humanStaffResponse,
     suggestedCategory: row.suggestedCategory,
+    confidence: row.confidence,
+    source: row.source,
     status: row.status,
     createdAt: row.createdAt.toISOString(),
   };
@@ -240,12 +230,10 @@ router.delete("/admin/session", (_req, res): void => {
 });
 
 router.get("/dashboard/summary", requireAdmin, async (_req, res): Promise<void> => {
-  const currentMonth = new Date().toISOString().slice(0, 7);
-  const [humanQueue, pendingRecordings, monthlyDeliveries, recentConversations, recentRecordingRequests, recentContent] =
+  const [humanQueue, pendingRecordings, recentConversations, recentRecordingRequests, recentContent] =
     await Promise.all([
       db.select({ count: sql<number>`count(*)::int` }).from(conversationsTable).where(eq(conversationsTable.mode, "human")),
       db.select({ count: sql<number>`count(*)::int` }).from(recordingRequestsTable).where(eq(recordingRequestsTable.status, "pending")),
-      db.select({ count: sql<number>`count(*)::int` }).from(tuteDeliveriesTable).where(eq(tuteDeliveriesTable.month, currentMonth)),
       db.select().from(conversationsTable).orderBy(desc(conversationsTable.lastMessageAt)).limit(5),
       db.select().from(recordingRequestsTable).orderBy(desc(recordingRequestsTable.createdAt)).limit(3),
       db.select().from(dynamicContentTable).orderBy(desc(dynamicContentTable.updatedAt)).limit(2),
@@ -278,7 +266,6 @@ router.get("/dashboard/summary", requireAdmin, async (_req, res): Promise<void> 
     GetDashboardSummaryResponse.parse({
       humanQueueCount: humanQueue[0]?.count ?? 0,
       pendingRecordingCount: pendingRecordings[0]?.count ?? 0,
-      deliveriesThisMonth: monthlyDeliveries[0]?.count ?? 0,
       recentConversationCount: recentConversations.length,
       recentActivity,
     }),
@@ -478,168 +465,6 @@ router.get("/admin/logs", requireAdmin, async (_req, res): Promise<void> => {
   res.json({ logs: lines.slice(-30) });
 });
 
-router.get("/deliveries", requireAdmin, async (req, res): Promise<void> => {
-  const rawMonth = typeof req.query?.month === "string" ? req.query.month : "";
-  const match = rawMonth.match(/^(\d{4}-\d{2})/);
-  const normalizedQuery = {
-    ...req.query,
-    month: match ? match[1] : rawMonth.slice(0, 7),
-  };
-  const query = GetDeliveriesQueryParams.safeParse(normalizedQuery);
-  if (!query.success) {
-    res.status(400).json({ error: query.error.message });
-    return;
-  }
-  const rows = await db
-    .select()
-    .from(tuteDeliveriesTable)
-    .where(eq(tuteDeliveriesTable.month, query.data.month))
-    .orderBy(desc(tuteDeliveriesTable.createdAt))
-    .limit(500);
-  res.json(GetDeliveriesResponse.parse(rows.map(serializeDelivery)));
-});
-
-router.post("/deliveries/inspect", requireAdmin, async (req, res): Promise<void> => {
-  const parsed = InspectTuteDeliveryFileBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.message });
-    return;
-  }
-  try {
-    const { columns, rows } = parseSpreadsheet(parsed.data.fileName, parsed.data.fileData);
-    res.json(
-      InspectTuteDeliveryFileResponse.parse({
-        columns,
-        previewRows: rows.slice(0, 5),
-        rowCount: rows.length,
-      }),
-    );
-  } catch (error) {
-    res.status(400).json({
-      error: error instanceof Error ? error.message : "Unable to read this spreadsheet.",
-    });
-  }
-});
-
-router.post("/deliveries/import", requireAdmin, async (req, res): Promise<void> => {
-  const rawMonth = typeof req.body?.month === "string" ? req.body.month : "";
-  const match = rawMonth.match(/^(\d{4}-\d{2})/);
-  const normalizedBody = {
-    ...req.body,
-    month: match ? match[1] : rawMonth.slice(0, 7),
-  };
-  const parsed = ImportTuteDeliveriesBody.safeParse(normalizedBody);
-  if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.message });
-    return;
-  }
-
-  let rows: ReturnType<typeof parseSpreadsheet>["rows"];
-  try {
-    rows = parseSpreadsheet(parsed.data.fileName, parsed.data.fileData).rows;
-  } catch (error) {
-    res.status(400).json({
-      error: error instanceof Error ? error.message : "Unable to read this spreadsheet.",
-    });
-    return;
-  }
-
-  const columnMap = parsed.data.columnMap;
-  const requiredColumns = Object.values(columnMap);
-  if (requiredColumns.some((column) => !column) || new Set(requiredColumns).size !== 4) {
-    res.status(400).json({ error: "Choose a different spreadsheet column for each field." });
-    return;
-  }
-
-  const { deliveryWave, itemType } = parsed.data;
-  const normalizedRows = new Map<
-    string,
-    { phoneNumber: string; studentName: string | null; trackingNumber: string; address: string | null }
-  >();
-  const errors: string[] = [];
-  let skipped = 0;
-
-  rows.forEach((row, index) => {
-    try {
-      for (const column of requiredColumns) {
-        if (!(column in row)) throw new Error(`Column "${column}" was not found`);
-      }
-      // Uniform 9-digit key so +9478…, 078… and spaced/hyphenated numbers all match.
-      const phoneNumber = toPhoneKey(row[columnMap.phoneNumber] ?? "");
-      const trackingNumber = (row[columnMap.trackingNumber] ?? "").trim();
-      if (!trackingNumber) throw new Error("Tracking number is empty");
-      const key = `${phoneNumber}:${parsed.data.month}:${deliveryWave}:${itemType}`;
-      normalizedRows.set(key, {
-        phoneNumber,
-        studentName: row[columnMap.studentName]?.trim() || null,
-        trackingNumber,
-        address: row[columnMap.address]?.trim() || null,
-      });
-    } catch (error) {
-      skipped += 1;
-      if (errors.length < 25) {
-        errors.push(
-          `Row ${index + 2}: ${error instanceof Error ? error.message : "Invalid delivery row"}`,
-        );
-      }
-    }
-  });
-
-  const records = [...normalizedRows.values()];
-  const phones = records.map((record) => record.phoneNumber);
-  // Only rows for this exact month + wave + item are matched/updated; other waves are untouched.
-  const scope = and(
-    eq(tuteDeliveriesTable.month, parsed.data.month),
-    eq(tuteDeliveriesTable.deliveryWave, deliveryWave),
-    eq(tuteDeliveriesTable.itemType, itemType),
-  );
-  const existingRows = phones.length
-    ? await db
-        .select({ phoneNumber: tuteDeliveriesTable.phoneNumber })
-        .from(tuteDeliveriesTable)
-        .where(and(scope, inArray(tuteDeliveriesTable.phoneNumber, phones)))
-    : [];
-  const existingPhones = new Set(existingRows.map((row) => row.phoneNumber));
-  const CHUNK = 500;
-  for (let offset = 0; offset < records.length; offset += CHUNK) {
-    await db
-      .insert(tuteDeliveriesTable)
-      .values(
-        records.slice(offset, offset + CHUNK).map((record) => ({
-          ...record,
-          month: parsed.data.month,
-          deliveryWave,
-          itemType,
-          status: "Dispatched" as const,
-        })),
-      )
-      .onConflictDoUpdate({
-        target: [
-          tuteDeliveriesTable.phoneNumber,
-          tuteDeliveriesTable.month,
-          tuteDeliveriesTable.deliveryWave,
-          tuteDeliveriesTable.itemType,
-        ],
-        set: {
-          studentName: sql`excluded.student_name`,
-          trackingNumber: sql`excluded.tracking_number`,
-          address: sql`excluded.address`,
-          status: "Dispatched",
-        },
-      });
-  }
-
-  res.json(
-    ImportTuteDeliveriesResponse.parse({
-      processed: rows.length,
-      inserted: records.filter((record) => !existingPhones.has(record.phoneNumber)).length,
-      updated: records.filter((record) => existingPhones.has(record.phoneNumber)).length,
-      skipped,
-      errors,
-    }),
-  );
-});
-
 router.get("/content", requireAdmin, async (_req, res): Promise<void> => {
   const rows = await db
     .select()
@@ -828,27 +653,8 @@ router.post("/admin/suggestions/:id/reject", requireAdmin, async (req, res): Pro
   res.json(RejectSuggestedKnowledgeItemResponse.parse(serializeSuggestion(updated)));
 });
 
-router.post("/admin/suggestions/reflect", requireAdmin, async (req, res): Promise<void> => {
-  const hoursBack =
-    typeof req.body?.hoursBack === "number" && req.body.hoursBack > 0
-      ? Math.min(168, req.body.hoursBack)
-      : 48;
-  try {
-    const result = await runBatchCognitiveReflection(hoursBack);
-    res.json({
-      ok: true,
-      analyzedConversations: result.analyzedConversations,
-      suggestionsCreated: result.suggestionsCreated,
-    });
-  } catch (err) {
-    res.status(500).json({
-      error: err instanceof Error ? err.message : "Failed to run cognitive reflection.",
-    });
-  }
-});
-
 // ---------------------------------------------------------------------------
-// Unified inbox: thread view, dashboard reply, handover, bot settings, live events
+// Unified inbox: thread view, dashboard reply, handover, reset profile, bot settings, live events
 // ---------------------------------------------------------------------------
 
 router.get("/admin/media/:filename", requireAdmin, (req, res): void => {
@@ -1042,6 +848,35 @@ router.post("/conversations/:phoneNumber/handover-to-bot", requireAdmin, async (
     return;
   }
   await releaseToBot(phone);
+  res.json({ ok: true, conversation: await conversationWithLastMessage(phone) });
+});
+
+router.post("/conversations/:phoneNumber/reset-profile", requireAdmin, async (req, res): Promise<void> => {
+  const phone = await resolveConversationPhone(String(req.params.phoneNumber ?? ""));
+  if (!phone) {
+    res.status(404).json({ error: "Conversation not found" });
+    return;
+  }
+  await db
+    .update(conversationsTable)
+    .set({
+      onboardingStatus: "new_lead",
+      studentType: "new",
+      batch: "unknown",
+      gender: "unknown",
+      examYear: null,
+      hometownDistrict: null,
+      otherSubjects: null,
+      classType: "undecided",
+      physicalLocation: null,
+      mode: "bot",
+      needsAttention: false,
+      escalationReason: null,
+    })
+    .where(eq(conversationsTable.phoneNumber, phone));
+
+  await releaseToBot(phone);
+  emitDashboardEvent("conversation.updated", { phoneNumber: phone, status: "bot" });
   res.json({ ok: true, conversation: await conversationWithLastMessage(phone) });
 });
 

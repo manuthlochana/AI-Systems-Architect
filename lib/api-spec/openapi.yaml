@@ -14,8 +14,6 @@ tags:
     description: Admin session and dashboard operations
   - name: conversations
     description: Student WhatsApp conversations
-  - name: deliveries
-    description: Tute delivery tracking and import
   - name: content
     description: Timetables, fees, and announcements
   - name: recordings
@@ -155,79 +153,6 @@ paths:
           description: Admin session required
         "404":
           description: Conversation not found
-  /deliveries:
-    get:
-      operationId: getDeliveries
-      tags: [deliveries]
-      summary: List tute deliveries for a month
-      security:
-        - AdminSession: []
-      parameters:
-        - in: query
-          name: month
-          required: true
-          schema:
-            type: string
-            pattern: "^\\d{4}-\\d{2}$"
-      responses:
-        "200":
-          description: Deliveries for the selected month
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/TuteDelivery"
-        "401":
-          description: Admin session required
-  /deliveries/import:
-    post:
-      operationId: importTuteDeliveries
-      tags: [deliveries]
-      summary: Import a delivery spreadsheet
-      security:
-        - AdminSession: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/TuteDeliveryImportInput"
-      responses:
-        "200":
-          description: Import results
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/TuteDeliveryImportResult"
-        "400":
-          description: Invalid file or month
-        "401":
-          description: Admin session required
-  /deliveries/inspect:
-    post:
-      operationId: inspectTuteDeliveryFile
-      tags: [deliveries]
-      summary: Read spreadsheet columns and a short preview
-      security:
-        - AdminSession: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/TuteDeliveryFileInput"
-      responses:
-        "200":
-          description: Spreadsheet columns and preview rows
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/TuteDeliveryInspection"
-        "400":
-          description: Invalid file
-        "401":
-          description: Admin session required
   /content:
     get:
       operationId: getDynamicContent
@@ -301,7 +226,7 @@ paths:
     get:
       operationId: getSuggestedKnowledgeItems
       tags: [content]
-      summary: List suggested knowledge items captured from staff chats
+      summary: List autonomous knowledge insights distilled from staff chats
       security:
         - AdminSession: []
       parameters:
@@ -550,19 +475,18 @@ components:
       properties:
         humanQueueCount: { type: integer }
         pendingRecordingCount: { type: integer }
-        deliveriesThisMonth: { type: integer }
         recentConversationCount: { type: integer }
         recentActivity:
           type: array
           items: { $ref: "#/components/schemas/RecentActivity" }
-      required: [humanQueueCount, pendingRecordingCount, deliveriesThisMonth, recentConversationCount, recentActivity]
+      required: [humanQueueCount, pendingRecordingCount, recentConversationCount, recentActivity]
     RecentActivity:
       type: object
       properties:
         id: { type: string }
         description: { type: string }
         at: { type: string, format: date-time }
-        kind: { type: string, enum: [conversation, delivery, recording, content] }
+        kind: { type: string, enum: [conversation, recording, content] }
       required: [id, description, at, kind]
     Conversation:
       type: object
@@ -583,69 +507,6 @@ components:
       properties:
         mode: { type: string, enum: [bot, human] }
       required: [mode]
-    TuteDelivery:
-      type: object
-      properties:
-        id: { type: integer }
-        phoneNumber: { type: string }
-        studentName: { type: ["string", "null"] }
-        month: { type: string }
-        trackingNumber: { type: string }
-        address: { type: ["string", "null"] }
-        status: { type: string, enum: [Dispatched, Delivered, Returned] }
-        deliveryWave: { type: string, enum: ["Wave 1", "Wave 2", "Wave 3", "Wave 4"] }
-        itemType: { type: string, enum: ["Monthly Tute", "Special Book"] }
-        createdAt: { type: string, format: date-time }
-      required: [id, phoneNumber, month, trackingNumber, status, deliveryWave, itemType, createdAt]
-    TuteDeliveryImportInput:
-      type: object
-      properties:
-        month: { type: string, pattern: "^\\d{4}-\\d{2}$" }
-        deliveryWave: { type: string, enum: ["Wave 1", "Wave 2", "Wave 3", "Wave 4"] }
-        itemType: { type: string, enum: ["Monthly Tute", "Special Book"] }
-        fileName: { type: string, maxLength: 255 }
-        fileData: { type: string, maxLength: 15000000 }
-        columnMap: { $ref: "#/components/schemas/TuteDeliveryColumnMap" }
-      required: [month, deliveryWave, itemType, fileName, fileData, columnMap]
-    TuteDeliveryFileInput:
-      type: object
-      properties:
-        fileName: { type: string, maxLength: 255 }
-        fileData: { type: string, maxLength: 15000000 }
-      required: [fileName, fileData]
-    TuteDeliveryColumnMap:
-      type: object
-      properties:
-        phoneNumber: { type: string, minLength: 1, maxLength: 200 }
-        studentName: { type: string, minLength: 1, maxLength: 200 }
-        trackingNumber: { type: string, minLength: 1, maxLength: 200 }
-        address: { type: string, minLength: 1, maxLength: 200 }
-      required: [phoneNumber, studentName, trackingNumber, address]
-    TuteDeliveryInspection:
-      type: object
-      properties:
-        columns:
-          type: array
-          items: { type: string }
-        previewRows:
-          type: array
-          items:
-            type: object
-            additionalProperties:
-              type: string
-        rowCount: { type: integer }
-      required: [columns, previewRows, rowCount]
-    TuteDeliveryImportResult:
-      type: object
-      properties:
-        processed: { type: integer }
-        inserted: { type: integer }
-        updated: { type: integer }
-        skipped: { type: integer }
-        errors:
-          type: array
-          items: { type: string }
-      required: [processed, inserted, updated, skipped, errors]
     DynamicContent:
       type: object
       properties:
@@ -653,6 +514,8 @@ components:
         category: { type: string, enum: [timetable, pricing, general, faq, announcement] }
         title: { type: string }
         content: { type: string }
+        source: { type: string }
+        confidence: { type: number }
         updatedAt: { type: string, format: date-time }
       required: [key, category, title, content, updatedAt]
     DynamicContentInput:
@@ -700,6 +563,8 @@ components:
         studentQuestion: { type: string }
         humanStaffResponse: { type: string }
         suggestedCategory: { type: string }
+        confidence: { type: number }
+        source: { type: string }
         status: { type: string, enum: [pending, approved, rejected] }
         createdAt: { type: string, format: date-time }
       required: [id, studentQuestion, humanStaffResponse, suggestedCategory, status, createdAt]
@@ -709,4 +574,3 @@ components:
         studentQuestion: { type: string, minLength: 1 }
         humanStaffResponse: { type: string, minLength: 1 }
         suggestedCategory: { type: string, minLength: 1 }
-

@@ -78,7 +78,7 @@ export function readKnowledgeBase(forceReload = false): string {
   }
   return (
     cachedKnowledgeBase ||
-    `# Suranga Gamage A/L Media\nOfficial Hotline: 071 016 1699\nTechnical Support: 078 909 4047\nWebsite: mediasuranga.lk`
+    `# Suranga Gamage A/L Media\nOfficial Hotline: 071 016 1699\nTechnical Support: 078 909 4047\nWebsite: mediasuranga.lk\nTute Tracking: https://mediasranga-tutes-tracking.vercel.app`
   );
 }
 
@@ -106,18 +106,40 @@ export async function fetchDynamicAnnouncements(): Promise<string> {
 
     if (!items.length) return "";
 
-    const formatted = items
-      .map(
-        (item) =>
-          `📌 [${item.category.toUpperCase()}] **${item.title}**\n${item.content.trim()}`,
-      )
-      .join("\n\n");
+    const manualAnnouncements = items.filter((item) => item.source !== "autonomous_reflection");
+    const autonomousInsights = items.filter((item) => item.source === "autonomous_reflection");
 
-    return `## 🚨 LATEST OFFICIAL ANNOUNCEMENTS & LIVE UPDATES (TOP PRIORITY)
+    const sections: string[] = [];
+
+    if (manualAnnouncements.length > 0) {
+      const formattedManual = manualAnnouncements
+        .map(
+          (item) =>
+            `📌 [${item.category.toUpperCase()}] **${item.title}**\n${item.content.trim()}`,
+        )
+        .join("\n\n");
+
+      sections.push(`## 🚨 LATEST OFFICIAL ANNOUNCEMENTS & LIVE UPDATES (TOP PRIORITY)
 These active announcements were published directly by class management and take strict precedence over any older or conflicting static guidelines:
 
-${formatted}
-`;
+${formattedManual}`);
+    }
+
+    if (autonomousInsights.length > 0) {
+      const formattedAuto = autonomousInsights
+        .map(
+          (item) =>
+            `🧠 [${item.category.toUpperCase()} · Confidence ${(item.confidence * 100).toFixed(0)}%] **${item.title}**\n${item.content.trim()}`,
+        )
+        .join("\n\n");
+
+      sections.push(`## 🧬 AUTONOMOUSLY LEARNED MEMORY INSIGHTS (SELF-DISTILLED FROM STAFF CHATS)
+These verified rules, FAQs, and policy clarifications were autonomously distilled from staff resolutions. Apply them naturally whenever relevant:
+
+${formattedAuto}`);
+    }
+
+    return sections.join("\n\n---\n\n");
   } catch (err) {
     logger.warn(
       { err: err instanceof Error ? err.message : String(err) },
@@ -125,6 +147,59 @@ ${formatted}
     );
     return "";
   }
+}
+
+/**
+ * Detects whether the student's current message expresses admission intent, asks about joining a batch,
+ * or asks general new-student class details — which must trigger Admissions & Re-Profiling Mode
+ * even if the conversation was previously marked `onboarded`.
+ */
+const ADMISSION_OR_BATCH_INTENT_REGEX =
+  /(අලුතින්|අලුත්|ජොයින්|බැඳෙන්න|සම්බන්ධ\s*වෙන්න|ක්ලාස්\s*එකට\s*එන්න|පන්තියට\s*එන්න|විස්තර\s*කියන්න|මුල\s*ඉඳන්|join|new\s*batch|new\s*class|register|admission|how\s*to\s*join|2026|2027|2028|class\s*details|time\s*table|කාලසටහන|පන්ති\s*ගාස්තු)/i;
+
+export function detectAdmissionOrBatchInquiry(turnText?: string): boolean {
+  if (!turnText) return false;
+  return ADMISSION_OR_BATCH_INTENT_REGEX.test(turnText);
+}
+
+export interface ProfileCompleteness {
+  examYearKnown: boolean;
+  localityKnown: boolean;
+  enrollmentTypeKnown: boolean;
+  physicalCenterKnown: boolean;
+  missingDimensions: string[];
+  isComplete: boolean;
+}
+
+export function evaluateProfileCompleteness(
+  profile: Conversation | undefined,
+): ProfileCompleteness {
+  const examYear =
+    profile?.examYear ||
+    (profile?.batch && profile.batch !== "unknown" ? Number(profile.batch) : null);
+  const examYearKnown = Boolean(examYear);
+  const localityKnown = Boolean(profile?.hometownDistrict?.trim());
+  const enrollmentType = profile?.classType ?? "undecided";
+  const enrollmentTypeKnown = enrollmentType === "online" || enrollmentType === "physical";
+  const physicalCenterKnown =
+    enrollmentType !== "physical" || Boolean(profile?.physicalLocation);
+
+  const missingDimensions: string[] = [];
+  if (!examYearKnown) missingDimensions.push("exam_year (2026 / 2027 / 2028)");
+  if (!localityKnown) missingDimensions.push("geographic_locality (district/city in Sri Lanka)");
+  if (!enrollmentTypeKnown) missingDimensions.push("enrollment_type (online vs physical)");
+  if (enrollmentType === "physical" && !profile?.physicalLocation) {
+    missingDimensions.push("physical_center (sipyana_matara, maarga_tangalle, or ics_galle)");
+  }
+
+  return {
+    examYearKnown,
+    localityKnown,
+    enrollmentTypeKnown,
+    physicalCenterKnown,
+    missingDimensions,
+    isComplete: missingDimensions.length === 0,
+  };
 }
 
 function formatStudentProfileMemory(
@@ -141,21 +216,42 @@ function formatStudentProfileMemory(
   const otherSubjects = profile?.otherSubjects || "Unknown";
   const classType = profile?.classType ?? "undecided";
   const physicalLocation = profile?.physicalLocation || "None";
-  const onboardingStatus =
-    profile?.onboardingStatus ??
-    (profile?.studentType === "existing" ? "onboarded" : "new_lead");
+  const storedStatus = profile?.onboardingStatus ?? "new_lead";
 
-  const statusGuidance =
-    onboardingStatus === "onboarded"
-      ? "EXISTING ENROLLED STUDENT (Academic Support & Care Mode): Do NOT ask onboarding/profiling questions and do NOT push registration or payment instructions unless the student explicitly asks about monthly fees."
-      : `NEW / ONBOARDING STUDENT (${onboardingStatus}): Always answer the student's immediate question first. If natural, ask AT MOST ONE friendly follow-up question to discover missing fields (Exam Year -> District / Class Type). Once Exam Year and Class Type are known, guide them naturally on how to join.`;
+  const completeness = evaluateProfileCompleteness(profile);
+  const hasAdmissionIntent = detectAdmissionOrBatchInquiry(context.turnText);
 
-  return `## 🧠 CURRENT STUDENT PROFILE MEMORY (PERMANENT DATABASE STATE)
-Profile -> Phone: ${phone}, Name: ${name}, Gender: ${gender}, Exam: ${examYear}, District: ${district}, OtherSubjects: ${otherSubjects}, ClassType: ${classType}, PhysicalLocation: ${physicalLocation}, Status: ${onboardingStatus}
+  // Dynamic Intent-Driven Re-evaluation:
+  // Even if storedStatus === 'onboarded', if the student expresses admission/batch intent
+  // OR if their core profile dimensions are incomplete, activate Admissions & Re-Profiling Mode!
+  const triggerAdmissionsProfiling =
+    storedStatus !== "onboarded" || hasAdmissionIntent || !completeness.isComplete;
 
-- Strict Memory Rule: NEVER re-ask a question for any field that already has a value above (e.g., if Exam is 2027 or District is known, never ask for it again).
-- Mode Directive: ${statusGuidance}
-- Whenever the student reveals any new or updated profile detail (exam year, district, online vs physical preference, physical center, gender, other subjects, or that they are already an enrolled student), call \`update_student_profile\`.`;
+  const nextDimensionToAsk = completeness.missingDimensions[0] ?? null;
+
+  const modeDirective = triggerAdmissionsProfiling
+    ? `ACTIVE ADMISSIONS & DYNAMIC PROFILING MODE (Triggered: ${
+        hasAdmissionIntent ? "Student expressed batch/admission inquiry" : `Status=${storedStatus}`
+      }):
+  - Missing Core Dimensions: ${
+    completeness.missingDimensions.length > 0
+      ? completeness.missingDimensions.join(" -> ")
+      : "None (All core dimensions known! Guide them on registration/fees if they are joining)."
+  }
+  - Next Single Question Priority: ${
+    nextDimensionToAsk
+      ? `After answering their immediate question, warmly ask ONE natural question to discover: ${nextDimensionToAsk}.`
+      : "All core dimensions are known. Provide tailored guidance for their batch and class type."
+  }`
+    : `ENROLLED STUDENT SUPPORT MODE: All core profile dimensions are complete and the student is not asking an admission inquiry. Answer their question directly and warmly without re-asking profile questions.`;
+
+  return `## 🧠 CURRENT STUDENT PROFILE MEMORY & INTENT STATE MACHINE
+Profile -> Phone: ${phone}, Name: ${name}, Gender: ${gender}, ExamYear: ${examYear}, GeographicLocality: ${district}, OtherSubjects: ${otherSubjects}, EnrollmentType: ${classType}, PhysicalCenter: ${physicalLocation}, StoredStatus: ${storedStatus}
+
+- Strict Anti-Repetition Rule: NEVER re-ask a dimension that already has a valid value above unless the student explicitly asks about switching to a different batch.
+- Dynamic State Machine Directive:
+${modeDirective}
+- Tool Directive: Whenever the student states or updates \`exam_year\`, \`geographic_locality\` (\`hometown_district\`), \`enrollment_type\` (\`class_type\`), \`physical_center\` (\`physical_location\`), \`other_subjects\`, or \`gender\`, call \`update_student_profile\` immediately.`;
 }
 
 const BURST_OUTPUT_INSTRUCTION = `## 💬 MULTI-MESSAGE CONVERSATIONAL CADENCE (JSON OUTPUT FORMAT)
@@ -195,7 +291,7 @@ const FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "update_student_profile",
     description:
-      "Save or update discovered student profile attributes in permanent memory whenever the student mentions their A/L exam year, hometown/district, class preference (online vs physical), physical hall location, other A/L subjects, gender, or onboarding status.",
+      "Save or update discovered student profile dimensions in permanent memory whenever the student mentions their A/L exam year (2026/2027/2028), geographic locality (district/city), enrollment type (online vs physical), physical center (sipyana_matara, maarga_tangalle, ics_galle), other A/L subjects, gender, or onboarding status.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -206,30 +302,58 @@ const FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
         },
         exam_year: {
           type: Type.STRING,
-          description: "A/L exam year such as '2027' or '2028'.",
+          description: "A/L exam year: '2026', '2027', or '2028'.",
+        },
+        geographic_locality: {
+          type: Type.STRING,
+          description: "Student's district or hometown city in Sri Lanka (e.g., 'Matara', 'Galle', 'Tangalle', 'Gampaha', 'Colombo', 'Kandy').",
         },
         hometown_district: {
           type: Type.STRING,
-          description: "Student's hometown or district in Sri Lanka (e.g., 'Matara', 'Galle', 'Hambantota', 'Colombo', 'Kandy', 'Kurunegala').",
+          description: "Alias for geographic_locality (student's district/city).",
+        },
+        enrollment_type: {
+          type: Type.STRING,
+          enum: ["online", "physical", "undecided"],
+          description: "Whether the student is enrolling in 'online' or 'physical' hall classes.",
+        },
+        class_type: {
+          type: Type.STRING,
+          enum: ["online", "physical", "undecided"],
+          description: "Alias for enrollment_type ('online' or 'physical').",
+        },
+        physical_center: {
+          type: Type.STRING,
+          enum: [
+            "sipyana_matara",
+            "maarga_tangalle",
+            "ics_galle",
+            "matara_sipyana",
+            "tangalle_maarga",
+            "galle_ics",
+          ],
+          description: "Physical hall center if attending physical classes (Sipyana Matara, Maarga Tangalle, or ICS Galle).",
+        },
+        physical_location: {
+          type: Type.STRING,
+          enum: [
+            "matara_sipyana",
+            "tangalle_maarga",
+            "galle_ics",
+            "sipyana_matara",
+            "maarga_tangalle",
+            "ics_galle",
+          ],
+          description: "Alias for physical_center.",
         },
         other_subjects: {
           type: Type.STRING,
           description: "Comma-separated other A/L subjects the student studies (e.g., 'Sinhala, BC').",
         },
-        class_type: {
-          type: Type.STRING,
-          enum: ["online", "physical", "undecided"],
-          description: "Whether the student is attending online or physical hall classes.",
-        },
-        physical_location: {
-          type: Type.STRING,
-          enum: ["matara_sipyana", "tangalle_maarga", "galle_ics"],
-          description: "Physical hall center if attending physical classes (Matara Sipyana, Tangalle Maarga, or Galle ICS).",
-        },
         onboarding_status: {
           type: Type.STRING,
           enum: ["new_lead", "profiling", "payment_pending", "onboarded"],
-          description: "Set to 'onboarded' if the student indicates they are already registered/paying, or 'payment_pending' once ready to register.",
+          description: "Current onboarding lifecycle state.",
         },
       },
     },
@@ -237,7 +361,7 @@ const FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "escalate_to_human",
     description:
-      "Hand the conversation to the office staff and mute the bot. Use for actionable requests (payment slip verification, password reset, login errors, Zoom link requests), missing/delayed tute parcels, fee relief / free card requests, frustrated students, or questions that are not answered by the Knowledge Base.",
+      "Hand the conversation to the office staff and mute the bot. Use for actionable requests (live class emergency payment slip verification, password reset, login errors, live Zoom link requests), missing/delayed tute parcels, fee relief / free card requests, frustrated students, or questions that are not answered by the Knowledge Base.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -265,8 +389,23 @@ export function extractSriLankanPhone(text: string): string | null {
 
 const VALID_GENDERS = new Set(["male", "female", "unknown"]);
 const VALID_CLASS_TYPES = new Set(["online", "physical", "undecided"]);
-const VALID_LOCATIONS = new Set(["matara_sipyana", "tangalle_maarga", "galle_ics"]);
 const VALID_STATUSES = new Set(["new_lead", "profiling", "payment_pending", "onboarded"]);
+
+function normalizePhysicalCenter(
+  raw: string,
+): "matara_sipyana" | "tangalle_maarga" | "galle_ics" | null {
+  const v = raw.toLowerCase().trim();
+  if (v === "matara_sipyana" || v === "sipyana_matara" || v.includes("matara") || v.includes("sipyana")) {
+    return "matara_sipyana";
+  }
+  if (v === "tangalle_maarga" || v === "maarga_tangalle" || v.includes("tangalle") || v.includes("maarga")) {
+    return "tangalle_maarga";
+  }
+  if (v === "galle_ics" || v === "ics_galle" || v.includes("galle") || v.includes("ics")) {
+    return "galle_ics";
+  }
+  return null;
+}
 
 async function executeUpdateStudentProfile(
   context: AssistantContext,
@@ -285,9 +424,11 @@ async function executeUpdateStudentProfile(
     patch.gender = gender as "male" | "female" | "unknown";
   }
 
-  const examYearRaw = stringArg(args, "exam_year", 20) || (typeof args.exam_year === "number" ? String(args.exam_year) : "");
+  const examYearRaw =
+    stringArg(args, "exam_year", 20) ||
+    (typeof args.exam_year === "number" ? String(args.exam_year) : "");
   if (examYearRaw) {
-    const yearMatch = examYearRaw.match(/202[6-9]/);
+    const yearMatch = examYearRaw.match(/202[5-9]/);
     const parsedYear = Number.parseInt(yearMatch ? yearMatch[0] : examYearRaw, 10);
     if (Number.isFinite(parsedYear) && parsedYear >= 2025 && parsedYear <= 2032) {
       patch.examYear = parsedYear;
@@ -297,9 +438,25 @@ async function executeUpdateStudentProfile(
     }
   }
 
-  const district = stringArg(args, "hometown_district", 100);
-  if (district) {
-    patch.hometownDistrict = district;
+  const locality =
+    stringArg(args, "geographic_locality", 100) ||
+    stringArg(args, "hometown_district", 100);
+  if (locality) {
+    patch.hometownDistrict = locality;
+    // If locality is outside Southern Province (Matara, Galle, Hambantota/Tangalle), default enrollment_type to online unless specified
+    const lowerLoc = locality.toLowerCase();
+    const isSouthern =
+      lowerLoc.includes("matara") ||
+      lowerLoc.includes("මාතර") ||
+      lowerLoc.includes("galle") ||
+      lowerLoc.includes("ගාල්ල") ||
+      lowerLoc.includes("hambantota") ||
+      lowerLoc.includes("හම්බන්තොට") ||
+      lowerLoc.includes("tangalle") ||
+      lowerLoc.includes("තංගල්ල");
+    if (!isSouthern && !args.enrollment_type && !args.class_type) {
+      patch.classType = "online";
+    }
   }
 
   const otherSubjects = stringArg(args, "other_subjects", 200);
@@ -307,17 +464,18 @@ async function executeUpdateStudentProfile(
     patch.otherSubjects = otherSubjects;
   }
 
-  const classType = stringArg(args, "class_type", 30).toLowerCase();
-  if (VALID_CLASS_TYPES.has(classType)) {
-    patch.classType = classType as "online" | "physical" | "undecided";
+  const enrollmentType = (
+    stringArg(args, "enrollment_type", 30) || stringArg(args, "class_type", 30)
+  ).toLowerCase();
+  if (VALID_CLASS_TYPES.has(enrollmentType)) {
+    patch.classType = enrollmentType as "online" | "physical" | "undecided";
   }
 
-  const physicalLocation = stringArg(args, "physical_location", 40).toLowerCase();
-  if (VALID_LOCATIONS.has(physicalLocation)) {
-    patch.physicalLocation = physicalLocation as
-      | "matara_sipyana"
-      | "tangalle_maarga"
-      | "galle_ics";
+  const rawCenter =
+    stringArg(args, "physical_center", 40) || stringArg(args, "physical_location", 40);
+  const normalizedCenter = rawCenter ? normalizePhysicalCenter(rawCenter) : null;
+  if (normalizedCenter) {
+    patch.physicalLocation = normalizedCenter;
     if (!patch.classType) {
       patch.classType = "physical";
     }
@@ -330,17 +488,13 @@ async function executeUpdateStudentProfile(
       | "profiling"
       | "payment_pending"
       | "onboarded";
-  } else if (existing?.onboardingStatus !== "onboarded") {
+  } else {
     const mergedExamYear = patch.examYear ?? existing?.examYear;
     const mergedClassType = patch.classType ?? existing?.classType ?? "undecided";
-    if (mergedExamYear && mergedClassType !== "undecided") {
+    const mergedLocality = patch.hometownDistrict ?? existing?.hometownDistrict;
+    if (mergedExamYear && mergedClassType !== "undecided" && mergedLocality) {
       patch.onboardingStatus = "payment_pending";
-    } else if (
-      mergedExamYear ||
-      patch.hometownDistrict ||
-      existing?.hometownDistrict ||
-      mergedClassType !== "undecided"
-    ) {
+    } else if (mergedExamYear || mergedLocality || mergedClassType !== "undecided") {
       patch.onboardingStatus = "profiling";
     }
   }
@@ -365,10 +519,10 @@ async function executeUpdateStudentProfile(
     profile: {
       gender: patch.gender ?? existing?.gender ?? "unknown",
       examYear: patch.examYear ?? existing?.examYear ?? null,
-      hometownDistrict: patch.hometownDistrict ?? existing?.hometownDistrict ?? null,
+      geographicLocality: patch.hometownDistrict ?? existing?.hometownDistrict ?? null,
       otherSubjects: patch.otherSubjects ?? existing?.otherSubjects ?? null,
-      classType: patch.classType ?? existing?.classType ?? "undecided",
-      physicalLocation: patch.physicalLocation ?? existing?.physicalLocation ?? null,
+      enrollmentType: patch.classType ?? existing?.classType ?? "undecided",
+      physicalCenter: patch.physicalLocation ?? existing?.physicalLocation ?? null,
       onboardingStatus: patch.onboardingStatus ?? existing?.onboardingStatus ?? "new_lead",
     },
   };
@@ -518,28 +672,48 @@ export async function generateStudentReply(
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is not configured");
 
-  const [[studentProfile], history] = await Promise.all([
-    db
-      .select()
-      .from(conversationsTable)
+  let [studentProfile] = await db
+    .select()
+    .from(conversationsTable)
+    .where(eq(conversationsTable.phoneNumber, context.phoneNumber))
+    .limit(1);
+
+  // If the student was marked 'onboarded' but expresses new admission/batch inquiry while missing core profile fields,
+  // dynamically transition their status to 'profiling' so the state machine is never stuck.
+  if (
+    studentProfile?.onboardingStatus === "onboarded" &&
+    detectAdmissionOrBatchInquiry(context.turnText) &&
+    !evaluateProfileCompleteness(studentProfile).isComplete
+  ) {
+    const [reopened] = await db
+      .update(conversationsTable)
+      .set({ onboardingStatus: "profiling" })
       .where(eq(conversationsTable.phoneNumber, context.phoneNumber))
-      .limit(1),
-    db
-      .select({
-        direction: conversationMessagesTable.direction,
-        body: conversationMessagesTable.body,
-        createdAt: conversationMessagesTable.createdAt,
-      })
-      .from(conversationMessagesTable)
-      .where(
-        and(
-          eq(conversationMessagesTable.phoneNumber, context.phoneNumber),
-          ne(conversationMessagesTable.deliveryStatus, "closed_silently"),
-        ),
-      )
-      .orderBy(desc(conversationMessagesTable.createdAt))
-      .limit(12),
-  ]);
+      .returning();
+    if (reopened) {
+      studentProfile = reopened;
+      logger.info(
+        { phone: context.phoneNumber },
+        "[Intent Re-Evaluation] Re-opened profiling mode for admission/batch inquiry",
+      );
+    }
+  }
+
+  const history = await db
+    .select({
+      direction: conversationMessagesTable.direction,
+      body: conversationMessagesTable.body,
+      createdAt: conversationMessagesTable.createdAt,
+    })
+    .from(conversationMessagesTable)
+    .where(
+      and(
+        eq(conversationMessagesTable.phoneNumber, context.phoneNumber),
+        ne(conversationMessagesTable.deliveryStatus, "closed_silently"),
+      ),
+    )
+    .orderBy(desc(conversationMessagesTable.createdAt))
+    .limit(12);
 
   // Consecutive student messages (a debounced burst) become ONE consolidated user turn.
   const contents: Content[] = [];

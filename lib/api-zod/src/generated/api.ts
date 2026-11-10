@@ -58,13 +58,12 @@ export const DeleteAdminSessionResponse = zod.void()
 export const GetDashboardSummaryResponse = zod.object({
   "humanQueueCount": zod.number().int(),
   "pendingRecordingCount": zod.number().int(),
-  "deliveriesThisMonth": zod.number().int(),
   "recentConversationCount": zod.number().int(),
   "recentActivity": zod.array(zod.object({
   "id": zod.string(),
   "description": zod.string(),
   "at": zod.coerce.date(),
-  "kind": zod.enum(['conversation', 'delivery', 'recording', 'content'])
+  "kind": zod.enum(['conversation', 'recording', 'content'])
 }))
 })
 
@@ -124,93 +123,6 @@ export const SetConversationModeResponse = zod.object({
 
 
 /**
- * @summary List tute deliveries for a month
- */
-export const getDeliveriesQueryMonthRegExp = new RegExp('^\\d{4}-\\d{2}$');
-
-
-export const GetDeliveriesQueryParams = zod.object({
-  "month": zod.coerce.string().regex(getDeliveriesQueryMonthRegExp)
-})
-
-export const GetDeliveriesResponseItem = zod.object({
-  "id": zod.number().int(),
-  "phoneNumber": zod.string(),
-  "studentName": zod.string().nullish(),
-  "month": zod.string(),
-  "trackingNumber": zod.string(),
-  "address": zod.string().nullish(),
-  "status": zod.enum(['Dispatched', 'Delivered', 'Returned']),
-  "deliveryWave": zod.enum(['Wave 1', 'Wave 2', 'Wave 3', 'Wave 4']),
-  "itemType": zod.enum(['Monthly Tute', 'Special Book']),
-  "createdAt": zod.coerce.date()
-})
-export const GetDeliveriesResponse = zod.array(GetDeliveriesResponseItem)
-
-
-/**
- * @summary Import a delivery spreadsheet
- */
-export const importTuteDeliveriesBodyMonthRegExp = new RegExp('^\\d{4}-\\d{2}$');
-export const importTuteDeliveriesBodyFileNameMax = 255;
-
-export const importTuteDeliveriesBodyFileDataMax = 15000000;
-
-export const importTuteDeliveriesBodyColumnMapPhoneNumberMax = 200;
-
-export const importTuteDeliveriesBodyColumnMapStudentNameMax = 200;
-
-export const importTuteDeliveriesBodyColumnMapTrackingNumberMax = 200;
-
-export const importTuteDeliveriesBodyColumnMapAddressMax = 200;
-
-
-
-export const ImportTuteDeliveriesBody = zod.object({
-  "month": zod.string().regex(importTuteDeliveriesBodyMonthRegExp),
-  "deliveryWave": zod.enum(['Wave 1', 'Wave 2', 'Wave 3', 'Wave 4']),
-  "itemType": zod.enum(['Monthly Tute', 'Special Book']),
-  "fileName": zod.string().max(importTuteDeliveriesBodyFileNameMax),
-  "fileData": zod.string().max(importTuteDeliveriesBodyFileDataMax),
-  "columnMap": zod.object({
-  "phoneNumber": zod.string().min(1).max(importTuteDeliveriesBodyColumnMapPhoneNumberMax),
-  "studentName": zod.string().min(1).max(importTuteDeliveriesBodyColumnMapStudentNameMax),
-  "trackingNumber": zod.string().min(1).max(importTuteDeliveriesBodyColumnMapTrackingNumberMax),
-  "address": zod.string().min(1).max(importTuteDeliveriesBodyColumnMapAddressMax)
-})
-})
-
-export const ImportTuteDeliveriesResponse = zod.object({
-  "processed": zod.number().int(),
-  "inserted": zod.number().int(),
-  "updated": zod.number().int(),
-  "skipped": zod.number().int(),
-  "errors": zod.array(zod.string())
-})
-
-
-/**
- * @summary Read spreadsheet columns and a short preview
- */
-export const inspectTuteDeliveryFileBodyFileNameMax = 255;
-
-export const inspectTuteDeliveryFileBodyFileDataMax = 15000000;
-
-
-
-export const InspectTuteDeliveryFileBody = zod.object({
-  "fileName": zod.string().max(inspectTuteDeliveryFileBodyFileNameMax),
-  "fileData": zod.string().max(inspectTuteDeliveryFileBodyFileDataMax)
-})
-
-export const InspectTuteDeliveryFileResponse = zod.object({
-  "columns": zod.array(zod.string()),
-  "previewRows": zod.array(zod.record(zod.string(), zod.string())),
-  "rowCount": zod.number().int()
-})
-
-
-/**
  * @summary List editable timetables and announcements
  */
 export const GetDynamicContentResponseItem = zod.object({
@@ -218,6 +130,8 @@ export const GetDynamicContentResponseItem = zod.object({
   "category": zod.enum(['timetable', 'pricing', 'general', 'faq', 'announcement']),
   "title": zod.string(),
   "content": zod.string(),
+  "source": zod.string().optional(),
+  "confidence": zod.number().optional(),
   "updatedAt": zod.coerce.date()
 })
 export const GetDynamicContentResponse = zod.array(GetDynamicContentResponseItem)
@@ -251,6 +165,8 @@ export const UpsertDynamicContentResponse = zod.object({
   "category": zod.enum(['timetable', 'pricing', 'general', 'faq', 'announcement']),
   "title": zod.string(),
   "content": zod.string(),
+  "source": zod.string().optional(),
+  "confidence": zod.number().optional(),
   "updatedAt": zod.coerce.date()
 })
 
@@ -270,7 +186,7 @@ export const DeleteDynamicContentResponse = zod.void()
 
 
 /**
- * @summary List suggested knowledge items captured from staff chats
+ * @summary List autonomous knowledge insights distilled from staff chats
  */
 export const getSuggestedKnowledgeItemsQueryStatusDefault = `pending`;
 
@@ -284,6 +200,8 @@ export const GetSuggestedKnowledgeItemsResponseItem = zod.object({
   "studentQuestion": zod.string(),
   "humanStaffResponse": zod.string(),
   "suggestedCategory": zod.string(),
+  "confidence": zod.number().optional(),
+  "source": zod.string().optional(),
   "status": zod.enum(['pending', 'approved', 'rejected']),
   "createdAt": zod.coerce.date()
 })
@@ -314,6 +232,8 @@ export const UpdateSuggestedKnowledgeItemResponse = zod.object({
   "studentQuestion": zod.string(),
   "humanStaffResponse": zod.string(),
   "suggestedCategory": zod.string(),
+  "confidence": zod.number().optional(),
+  "source": zod.string().optional(),
   "status": zod.enum(['pending', 'approved', 'rejected']),
   "createdAt": zod.coerce.date()
 })
@@ -341,6 +261,8 @@ export const ApproveSuggestedKnowledgeItemResponse = zod.object({
   "category": zod.enum(['timetable', 'pricing', 'general', 'faq', 'announcement']),
   "title": zod.string(),
   "content": zod.string(),
+  "source": zod.string().optional(),
+  "confidence": zod.number().optional(),
   "updatedAt": zod.coerce.date()
 })
 
@@ -358,6 +280,8 @@ export const RejectSuggestedKnowledgeItemResponse = zod.object({
   "studentQuestion": zod.string(),
   "humanStaffResponse": zod.string(),
   "suggestedCategory": zod.string(),
+  "confidence": zod.number().optional(),
+  "source": zod.string().optional(),
   "status": zod.enum(['pending', 'approved', 'rejected']),
   "createdAt": zod.coerce.date()
 })

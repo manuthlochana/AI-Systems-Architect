@@ -10,7 +10,6 @@ import type { RecentActivity } from './recentActivity';
 export interface DashboardSummary {
   humanQueueCount: number;
   pendingRecordingCount: number;
-  deliveriesThisMonth: number;
   recentConversationCount: number;
   recentActivity: RecentActivity[];
 }

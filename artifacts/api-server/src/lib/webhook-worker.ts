@@ -10,8 +10,8 @@ import { getBotSettings } from "./bot-settings";
 import { escalateConversation, lockForAdmin, lockKey, releaseToBot } from "./conversation-state";
 import { emitDashboardEvent, kvDrain, kvGet, kvPush } from "./kv";
 import { logger } from "./logger";
-import { distillAndCaptureLearning, runBatchCognitiveReflection } from "./reflection";
-import { normalizePhoneNumber, toPhoneKey } from "./spreadsheet";
+import { distillAndCaptureLearning, runAutonomousMemoryCycle } from "./reflection";
+import { normalizePhoneNumber, toPhoneKey } from "./phone";
 import {
   isGroupChatEvent,
   isSilentInboundType,
@@ -642,22 +642,20 @@ export async function flushAllDebouncedReplies(): Promise<void> {
   await Promise.allSettled(keys.map((key) => flushDebounced(key)));
 }
 
-let lastNightlyReflectionDay = "";
-
 export function startWebhookWorker(): void {
   void poll();
   setInterval(() => void poll(), 5_000);
 
-  // Nightly Cognitive Reflection (runs once per Colombo calendar day after 23:30 Asia/Colombo, read-only)
+  // Autonomous Memory Worker: checks every 2 minutes for staff conversations that reached >= 30 minutes of inactivity
+  setTimeout(() => {
+    void runAutonomousMemoryCycle(48).catch((err) => {
+      logger.warn({ err }, "[Autonomous Memory] Initial reflection cycle failed");
+    });
+  }, 15_000);
+
   setInterval(() => {
-    const colomboNow = new Date(Date.now() + COLOMBO_OFFSET_MS);
-    const dayStr = colomboNow.toISOString().slice(0, 10);
-    const hour = colomboNow.getUTCHours();
-    if (hour === 23 && lastNightlyReflectionDay !== dayStr) {
-      lastNightlyReflectionDay = dayStr;
-      void runBatchCognitiveReflection(24).catch((err) => {
-        logger.warn({ err }, "[Nightly Reflection] Scheduled batch reflection failed");
-      });
-    }
-  }, 15 * 60_000);
+    void runAutonomousMemoryCycle(48).catch((err) => {
+      logger.warn({ err }, "[Autonomous Memory] Periodic reflection cycle failed");
+    });
+  }, 2 * 60_000);
 }

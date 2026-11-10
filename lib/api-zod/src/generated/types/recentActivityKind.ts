@@ -11,7 +11,6 @@ export type RecentActivityKind = typeof RecentActivityKind[keyof typeof RecentAc
 
 export const RecentActivityKind = {
   conversation: 'conversation',
-  delivery: 'delivery',
   recording: 'recording',
   content: 'content',
 } as const;

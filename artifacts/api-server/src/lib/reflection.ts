@@ -1,13 +1,20 @@
+import crypto from "node:crypto";
 import { GoogleGenAI, type Content } from "@google/genai";
-import { and, desc, eq, gte } from "drizzle-orm";
+import { and, desc, eq, gte, lt } from "drizzle-orm";
 import {
   conversationMessagesTable,
+  conversationsTable,
   db,
   dynamicContentTable,
   suggestedKnowledgeItemsTable,
 } from "@workspace/db";
 import { readKnowledgeBase } from "./ai-agent";
+import { emitDashboardEvent, kvGet, kvSet } from "./kv";
 import { logger } from "./logger";
+
+export const AUTO_PROMOTE_CONFIDENCE_THRESHOLD = 0.88;
+const MIN_STAGE_CONFIDENCE_THRESHOLD = 0.6;
+const INACTIVITY_REFLECTION_WINDOW_MS = 30 * 60_000;
 
 const CANDIDATE_MODELS = [
   process.env.GEMINI_MODEL,
@@ -17,7 +24,7 @@ const CANDIDATE_MODELS = [
   "gemini-3.5-flash",
 ].filter((m): m is string => Boolean(m));
 
-/** Scrubs Sri Lankan phone numbers, emails, and image tags from raw text before LLM reflection. */
+/** Scrubs Sri Lankan phone numbers, NICs, emails, and image tags from raw text before and after LLM reflection. */
 export function scrubRawPii(text: string): string {
   return text
     .replace(/\[IMAGE:[^\]]+\]/g, "[Image Attachment]")
@@ -27,40 +34,56 @@ export function scrubRawPii(text: string): string {
     .trim();
 }
 
+export function isPiiFree(text: string): boolean {
+  if (/\[PHONE_REDACTED\]|\[NIC_REDACTED\]|\[EMAIL_REDACTED\]/.test(text)) return false;
+  if (/(?<!\d)(?:\+?94[\s-]?|0[\s-]?)?(?:70|71|72|74|75|76|77|78)[\s-]?\d{3}[\s-]?\d{4}(?!\d)/.test(text)) {
+    // Allow official class office numbers (071 016 1699, 078 909 4047, 071 254 0000, 071 814 0322)
+    const strippedOfficial = text.replace(
+      /071[\s-]?016[\s-]?1699|078[\s-]?909[\s-]?4047|071[\s-]?254[\s-]?0000|071[\s-]?814[\s-]?0322/g,
+      "",
+    );
+    if (/(?<!\d)(?:\+?94[\s-]?|0[\s-]?)?7\d[\s-]?\d{3}[\s-]?\d{4}(?!\d)/.test(strippedOfficial)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 interface DistilledKnowledgeItem {
   valuable: boolean;
   confidence: number;
   category: "faq" | "timetable" | "pricing" | "general" | "announcement";
+  synthesizedTitle: string;
   generalizedQuestion: string;
   generalizedAnswer: string;
 }
 
-const REFLECTION_SYSTEM_PROMPT = `You are the Cognitive Memory Reflection Engine for Suranga Gamage's A/L Media Class Office (mediasuranga.lk).
-Your job is to analyze human-staff intervention chats and extract ONLY globally reusable class policies, schedule updates, or recurring FAQs that are not already obvious, while strictly stripping all Personal Identifiable Information (PII).
+const REFLECTION_SYSTEM_PROMPT = `You are the Autonomous Memory & Self-Distillation Engine (Hermes / MemGPT cognitive architecture) for Suranga Gamage's A/L Mass Media Class Office (mediasuranga.lk).
+Your mission is to analyze resolved human-staff conversations and synthesize general class rules, policy updates, fee changes, and timetable nuances into permanent institutional memory.
 
-STRICT FILTERING & PRIVACY RULES:
-1. STRIP ALL PII: Never include any student name, phone number, NIC number, home address, bank slip number, or parcel tracking code in your output.
-2. REJECT ONE-OFF / PERSONAL TRANSACTIONS (set "valuable": false):
-   - Password reset confirmations (e.g., "Your password was reset to 12345678")
-   - Individual payment slip approvals ("Your slip is verified")
-   - Individual tute tracking lookups
-   - Casual greetings, acknowledgements, or "wait a moment" messages
-   - Anything specific to only one student's personal account
-3. EXTRACT ONLY REUSABLE GLOBAL KNOWLEDGE (set "valuable": true, "confidence": 0.75 to 1.0):
-   - New or clarified class schedules, date changes, special seminars, or paper class times
-   - General policies about tutes, recordings, regional rules, or fees that apply to all students
-   - Clear answers to recurring academic or registration questions
-4. Write both "generalizedQuestion" and "generalizedAnswer" in clear, natural Sinhala suitable for the official FAQ Knowledge Base.
+STRICT SELF-DISTILLATION & SAFETY RULES:
+1. NEVER COPY-PASTE RAW CHATS: Synthesize clean, generalized rules or Q&As in natural Sinhala.
+2. ZERO PII: Strip all student names, personal phone numbers, NICs, home addresses, bank slip numbers, and parcel tracking numbers. (Official office hotlines 071 016 1699 and 078 909 4047 are allowed).
+3. DISCARD ONE-OFF PERSONAL TRANSACTIONS (set "valuable": false, "confidence": 0.0):
+   - Individual password reset confirmations ("Your password was reset to 12345678")
+   - Individual payment slip verifications
+   - Individual tute parcel lookups
+   - Casual greetings, acknowledgements, or "wait 5 minutes" replies
+4. CONFIDENCE & SAFETY SCORING (0.0 to 1.0):
+   - 0.88 – 1.00 (High Confidence -> Auto-Promoted to Active Agent Memory): Clear, unambiguous class schedule facts, official fee rules, general registration/website policies, or recurring academic explanations stated authoritatively by staff.
+   - 0.60 – 0.87 (Moderate Confidence -> Staged for Admin Review): Useful FAQ or situational rule that may need human verification before becoming a global policy.
+   - < 0.60: Discard.
 
 Return STRICT JSON matching this schema:
 {
   "items": [
     {
       "valuable": true,
-      "confidence": 0.9,
+      "confidence": 0.92,
       "category": "faq",
+      "synthesizedTitle": "Short 4-8 word title in Sinhala",
       "generalizedQuestion": "Generalized student question in Sinhala (zero PII)",
-      "generalizedAnswer": "Clean, authoritative office answer in Sinhala (zero PII)"
+      "generalizedAnswer": "Synthesized authoritative policy/answer in Sinhala (zero PII)"
     }
   ]
 }`;
@@ -102,41 +125,131 @@ async function runGeminiReflection(promptText: string): Promise<DistilledKnowled
             categoryRaw === "announcement"
               ? categoryRaw
               : "faq";
+          const q = scrubRawPii(String(item.generalizedQuestion ?? ""));
+          const a = scrubRawPii(String(item.generalizedAnswer ?? ""));
+          const title = scrubRawPii(String(item.synthesizedTitle ?? q.slice(0, 80)));
+          const rawConf = typeof item.confidence === "number" ? item.confidence : 0;
+          const confidence = Math.max(0, Math.min(1, Number(rawConf.toFixed(2))));
           return {
             valuable: Boolean(item.valuable),
-            confidence: typeof item.confidence === "number" ? item.confidence : 0,
+            confidence,
             category,
-            generalizedQuestion: scrubRawPii(String(item.generalizedQuestion ?? "")),
-            generalizedAnswer: scrubRawPii(String(item.generalizedAnswer ?? "")),
+            synthesizedTitle: title || q.slice(0, 80),
+            generalizedQuestion: q,
+            generalizedAnswer: a,
           };
         })
         .filter(
           (item) =>
             item.valuable &&
-            item.confidence >= 0.7 &&
+            item.confidence >= MIN_STAGE_CONFIDENCE_THRESHOLD &&
             item.generalizedQuestion.length >= 8 &&
             item.generalizedAnswer.length >= 10,
         );
     } catch (err) {
       logger.warn(
         { model, err: err instanceof Error ? err.message : String(err) },
-        "[Cognitive Reflection] Model attempt failed",
+        "[Autonomous Memory] Gemini reflection attempt failed",
       );
     }
   }
   return [];
 }
 
+async function ingestDistilledInsight(item: DistilledKnowledgeItem): Promise<"auto_promoted" | "staged" | "skipped"> {
+  const piiSafe =
+    isPiiFree(item.generalizedQuestion) &&
+    isPiiFree(item.generalizedAnswer) &&
+    isPiiFree(item.synthesizedTitle);
+
+  const effectiveConfidence = piiSafe ? item.confidence : Math.min(item.confidence, 0.75);
+  const hash = crypto
+    .createHash("sha1")
+    .update(item.generalizedQuestion.toLowerCase().trim())
+    .digest("hex")
+    .slice(0, 14);
+  const memoryKey = `auto_mem_${hash}`;
+
+  // High-confidence, PII-free insights (>= 0.88) are auto-promoted directly into active dynamic_content!
+  if (effectiveConfidence >= AUTO_PROMOTE_CONFIDENCE_THRESHOLD && piiSafe) {
+    const content = `Q: ${item.generalizedQuestion}\nA: ${item.generalizedAnswer}`;
+    await db
+      .insert(dynamicContentTable)
+      .values({
+        key: memoryKey,
+        category: item.category,
+        title: item.synthesizedTitle.slice(0, 180),
+        content,
+        source: "autonomous_reflection",
+        confidence: effectiveConfidence,
+      })
+      .onConflictDoUpdate({
+        target: dynamicContentTable.key,
+        set: {
+          category: item.category,
+          title: item.synthesizedTitle.slice(0, 180),
+          content,
+          source: "autonomous_reflection",
+          confidence: effectiveConfidence,
+          updatedAt: new Date(),
+        },
+      });
+
+    await db.insert(suggestedKnowledgeItemsTable).values({
+      sourceConversationId: null,
+      studentQuestion: item.generalizedQuestion,
+      humanStaffResponse: item.generalizedAnswer,
+      suggestedCategory: item.category,
+      confidence: effectiveConfidence,
+      source: "autonomous_reflection",
+      status: "approved",
+    });
+
+    emitDashboardEvent("memory.auto_promoted", {
+      key: memoryKey,
+      confidence: effectiveConfidence,
+      category: item.category,
+    });
+
+    logger.info(
+      { key: memoryKey, category: item.category, confidence: effectiveConfidence },
+      "[Autonomous Memory] Auto-promoted high-confidence insight into active knowledge context",
+    );
+    return "auto_promoted";
+  }
+
+  // Lower-confidence insights (< 0.88) are staged in suggested_knowledge_items for human audit
+  await db.insert(suggestedKnowledgeItemsTable).values({
+    sourceConversationId: null,
+    studentQuestion: item.generalizedQuestion,
+    humanStaffResponse: item.generalizedAnswer,
+    suggestedCategory: item.category,
+    confidence: effectiveConfidence,
+    source: "autonomous_reflection",
+    status: "pending",
+  });
+
+  emitDashboardEvent("memory.staged", {
+    confidence: effectiveConfidence,
+    category: item.category,
+  });
+
+  logger.info(
+    { category: item.category, confidence: effectiveConfidence },
+    "[Autonomous Memory] Staged ambiguous insight (< 0.88) for admin review",
+  );
+  return "staged";
+}
+
 /**
- * Distills a single staff reply in real time: strips PII, ignores casual/personal one-offs,
- * and only queues high-confidence reusable knowledge items.
+ * Distills a single staff reply in the background: strips PII, ignores casual/personal one-offs,
+ * auto-promotes high-confidence insights (>= 0.88), and stages lower-confidence ones (< 0.88).
  */
 export async function distillAndCaptureLearning(
   phoneNumber: string,
   staffBody: string,
 ): Promise<void> {
   const cleanStaff = scrubRawPii(staffBody);
-  // Ignore short or purely transactional one-liners without calling the LLM
   if (
     !cleanStaff ||
     cleanStaff.startsWith("[WhatsApp ") ||
@@ -166,68 +279,100 @@ export async function distillAndCaptureLearning(
       .join("\n");
 
     const kbSnippet = readKnowledgeBase().slice(0, 3500);
-    const prompt = `EXISTING KNOWLEDGE BASE SUMMARY:\n${kbSnippet}\n\n---\nRECENT STAFF INTERVENTION TRANSCRIPT (PII SCRUBBED):\n${transcript}\n\nLATEST STAFF REPLY TO EVALUATE:\n${cleanStaff}\n\nExtract at most 1 globally reusable FAQ/policy insight if and only if this staff reply contains general class knowledge not specific to one individual student.`;
+    const prompt = `EXISTING KNOWLEDGE BASE SUMMARY:\n${kbSnippet}\n\n---\nRECENT STAFF INTERVENTION TRANSCRIPT (PII SCRUBBED):\n${transcript}\n\nLATEST STAFF REPLY TO EVALUATE:\n${cleanStaff}\n\nSynthesize at most 1 globally reusable rule, policy, or FAQ insight if and only if this staff reply contains general class knowledge not specific to one individual student.`;
 
     const distilled = await runGeminiReflection(prompt);
     for (const item of distilled.slice(0, 1)) {
-      await db.insert(suggestedKnowledgeItemsTable).values({
-        sourceConversationId: "AI Cognitive Reflection (PII Scrubbed)",
-        studentQuestion: item.generalizedQuestion,
-        humanStaffResponse: item.generalizedAnswer,
-        suggestedCategory: item.category,
-        status: "pending",
-      });
-      logger.info(
-        { category: item.category, confidence: item.confidence },
-        "[Cognitive Reflection] Distilled anonymized knowledge item for admin review",
-      );
+      await ingestDistilledInsight(item);
     }
   } catch (err) {
-    logger.warn({ err }, "[Cognitive Reflection] Failed to distill staff interaction");
+    logger.warn({ err }, "[Autonomous Memory] Failed to distill staff interaction");
   }
 }
 
 /**
- * Batch reflection job (nightly cron + on-demand admin button):
- * Scans recent human-handled conversations, strips all PII, and distills recurring questions or new policies.
+ * Background Autonomous Worker:
+ * Scans staff-intervened conversations that have reached >= 30 minutes of inactivity
+ * (or resolved staff conversations in the last 48h), distills reusable insights,
+ * auto-promotes confidence >= 0.88 directly into `dynamic_content`, and stages < 0.88.
  */
-export async function runBatchCognitiveReflection(hoursBack = 48): Promise<{
+export async function runAutonomousMemoryCycle(hoursBack = 48): Promise<{
   analyzedConversations: number;
-  suggestionsCreated: number;
+  autoPromotedCount: number;
+  stagedCount: number;
 }> {
-  const since = new Date(Date.now() - hoursBack * 3600_000);
-  const recentMessages = await db
-    .select({
-      phoneNumber: conversationMessagesTable.phoneNumber,
-      direction: conversationMessagesTable.direction,
-      body: conversationMessagesTable.body,
-      externalId: conversationMessagesTable.externalId,
-      createdAt: conversationMessagesTable.createdAt,
-    })
-    .from(conversationMessagesTable)
-    .where(gte(conversationMessagesTable.createdAt, since))
-    .orderBy(desc(conversationMessagesTable.createdAt))
-    .limit(300);
+  const now = Date.now();
+  const since = new Date(now - hoursBack * 3600_000);
+  const inactiveBefore = new Date(now - INACTIVITY_REFLECTION_WINDOW_MS);
 
-  // Group by conversation and keep only conversations where human staff sent at least one message
-  const byPhone = new Map<string, typeof recentMessages>();
-  for (const msg of recentMessages) {
-    const list = byPhone.get(msg.phoneNumber) ?? [];
-    list.push(msg);
-    byPhone.set(msg.phoneNumber, list);
+  // Find conversations with staff activity in the last `hoursBack` hours that have been inactive for >= 30m
+  const candidateConvs = await db
+    .select({
+      phoneNumber: conversationsTable.phoneNumber,
+      lastStaffMessageAt: conversationsTable.lastStaffMessageAt,
+      lastMessageAt: conversationsTable.lastMessageAt,
+    })
+    .from(conversationsTable)
+    .where(
+      and(
+        gte(conversationsTable.lastStaffMessageAt, since),
+        lt(conversationsTable.lastMessageAt, inactiveBefore),
+      ),
+    )
+    .orderBy(desc(conversationsTable.lastStaffMessageAt))
+    .limit(15);
+
+  if (!candidateConvs.length) {
+    return { analyzedConversations: 0, autoPromotedCount: 0, stagedCount: 0 };
   }
 
-  const staffTranscripts: string[] = [];
-  for (const [, msgs] of byPhone.entries()) {
-    const hasHumanStaffReply = msgs.some(
+  const [existingSuggestions, existingDynamic] = await Promise.all([
+    db
+      .select({ q: suggestedKnowledgeItemsTable.studentQuestion })
+      .from(suggestedKnowledgeItemsTable)
+      .orderBy(desc(suggestedKnowledgeItemsTable.createdAt))
+      .limit(60),
+    db
+      .select({ title: dynamicContentTable.title })
+      .from(dynamicContentTable)
+      .limit(60),
+  ]);
+
+  const knownKeys = new Set([
+    ...existingSuggestions.map((s) => s.q.toLowerCase().trim()),
+    ...existingDynamic.map((d) => d.title.toLowerCase().trim()),
+  ]);
+
+  const transcriptsToReflect: string[] = [];
+
+  for (const conv of candidateConvs) {
+    const stamp = conv.lastStaffMessageAt?.getTime() ?? 0;
+    const dedupKey = `reflection:done:${conv.phoneNumber}:${stamp}`;
+    if (await kvGet(dedupKey)) continue;
+
+    const msgs = await db
+      .select({
+        direction: conversationMessagesTable.direction,
+        body: conversationMessagesTable.body,
+        externalId: conversationMessagesTable.externalId,
+      })
+      .from(conversationMessagesTable)
+      .where(eq(conversationMessagesTable.phoneNumber, conv.phoneNumber))
+      .orderBy(desc(conversationMessagesTable.createdAt))
+      .limit(12);
+
+    // Mark as reflected for 7 days so we don't re-process the exact same inactive session
+    await kvSet(dedupKey, "1", 7 * 86_400);
+
+    const hasStaff = msgs.some(
       (m) =>
         m.direction === "outbound" &&
         (!m.externalId || !m.externalId.startsWith("almedia_") || m.externalId.startsWith("almedia_dash_")),
     );
-    if (!hasHumanStaffReply) continue;
+    if (!hasStaff) continue;
 
-    const ordered = [...msgs].reverse();
-    const lines = ordered
+    const lines = [...msgs]
+      .reverse()
       .map((m) => {
         const speaker =
           m.direction === "inbound"
@@ -238,65 +383,50 @@ export async function runBatchCognitiveReflection(hoursBack = 48): Promise<{
         return `${speaker}: ${scrubRawPii(m.body)}`;
       })
       .join("\n");
+
     if (lines.trim()) {
-      staffTranscripts.push(lines);
+      transcriptsToReflect.push(lines);
     }
   }
 
-  if (staffTranscripts.length === 0) {
-    return { analyzedConversations: 0, suggestionsCreated: 0 };
+  if (!transcriptsToReflect.length) {
+    return { analyzedConversations: 0, autoPromotedCount: 0, stagedCount: 0 };
   }
 
-  const [existingSuggestions, existingDynamic] = await Promise.all([
-    db
-      .select({ q: suggestedKnowledgeItemsTable.studentQuestion })
-      .from(suggestedKnowledgeItemsTable)
-      .orderBy(desc(suggestedKnowledgeItemsTable.createdAt))
-      .limit(50),
-    db
-      .select({ title: dynamicContentTable.title })
-      .from(dynamicContentTable)
-      .limit(50),
-  ]);
-
-  const knownQuestions = new Set([
-    ...existingSuggestions.map((s) => s.q.toLowerCase().trim()),
-    ...existingDynamic.map((d) => d.title.toLowerCase().trim()),
-  ]);
-
   const kbSnippet = readKnowledgeBase().slice(0, 3500);
-  const combinedTranscript = staffTranscripts
-    .slice(0, 15)
-    .map((t, idx) => `--- Conversation #${idx + 1} ---\n${t}`)
+  const combinedTranscript = transcriptsToReflect
+    .slice(0, 10)
+    .map((t, idx) => `--- Resolved Staff Conversation #${idx + 1} ---\n${t}`)
     .join("\n\n");
 
-  const prompt = `EXISTING KNOWLEDGE BASE:\n${kbSnippet}\n\n---\nALREADY QUEUED QUESTIONS:\n${Array.from(knownQuestions).slice(0, 25).join("\n")}\n\n---\nRECENT HUMAN STAFF CONVERSATIONS (ANONYMIZED):\n${combinedTranscript}\n\nAnalyze these human-handled conversations and extract up to 5 high-value, globally reusable FAQ or policy insights that are not already in the Existing Knowledge Base or Already Queued Questions. Remember: ZERO PII.`;
+  const prompt = `EXISTING KNOWLEDGE BASE:\n${kbSnippet}\n\n---\nALREADY KNOWN TOPICS:\n${Array.from(knownKeys).slice(0, 30).join("\n")}\n\n---\nRESOLVED STAFF CONVERSATIONS (30+ MIN INACTIVE, PII SCRUBBED):\n${combinedTranscript}\n\nSynthesize up to 4 globally reusable class rules, schedule nuances, or FAQs that are not already in the Existing Knowledge Base or Already Known Topics. Assign an accurate confidence score (0.0 - 1.0).`;
 
   const distilled = await runGeminiReflection(prompt);
-  let created = 0;
+  let autoPromotedCount = 0;
+  let stagedCount = 0;
 
-  for (const item of distilled.slice(0, 5)) {
-    const key = item.generalizedQuestion.toLowerCase().trim();
-    if (knownQuestions.has(key)) continue;
-    knownQuestions.add(key);
+  for (const item of distilled.slice(0, 4)) {
+    const qKey = item.generalizedQuestion.toLowerCase().trim();
+    if (knownKeys.has(qKey)) continue;
+    knownKeys.add(qKey);
 
-    await db.insert(suggestedKnowledgeItemsTable).values({
-      sourceConversationId: "AI Cognitive Reflection (PII Scrubbed)",
-      studentQuestion: item.generalizedQuestion,
-      humanStaffResponse: item.generalizedAnswer,
-      suggestedCategory: item.category,
-      status: "pending",
-    });
-    created += 1;
+    const outcome = await ingestDistilledInsight(item);
+    if (outcome === "auto_promoted") autoPromotedCount += 1;
+    else if (outcome === "staged") stagedCount += 1;
   }
 
   logger.info(
-    { analyzedConversations: staffTranscripts.length, suggestionsCreated: created },
-    "[Cognitive Reflection] Completed batch reflection pass",
+    {
+      analyzedConversations: transcriptsToReflect.length,
+      autoPromotedCount,
+      stagedCount,
+    },
+    "[Autonomous Memory] Completed background 30m-inactivity reflection cycle",
   );
 
   return {
-    analyzedConversations: staffTranscripts.length,
-    suggestionsCreated: created,
+    analyzedConversations: transcriptsToReflect.length,
+    autoPromotedCount,
+    stagedCount,
   };
 }
