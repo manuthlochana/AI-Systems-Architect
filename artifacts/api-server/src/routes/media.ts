@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { Router, type IRouter } from "express";
 import {
@@ -61,13 +62,17 @@ import {
   parseSpreadsheet,
   toPhoneKey,
 } from "../lib/spreadsheet";
-import { isYCloudConfigured, sendYCloudText } from "../lib/ycloud";
+import { isYCloudConfigured, sendYCloudImage, sendYCloudText, uploadYCloudMedia } from "../lib/ycloud";
 import { readKnowledgeBase, writeKnowledgeBase } from "../lib/ai-agent";
 import { botSettingsTable } from "@workspace/db";
 import { DEFAULT_PERSONA, getBotSettings } from "../lib/bot-settings";
 import { lockForAdmin, releaseToBot } from "../lib/conversation-state";
 import { dashboardEvents, emitDashboardEvent } from "../lib/kv";
+import { runBatchCognitiveReflection } from "../lib/reflection";
 import { captureShadowLearning } from "../lib/webhook-worker";
+import { formatMediaMessageBody, parseMediaMessageBody } from "../lib/whatsapp-event";
+
+const UPLOADS_DIR = path.resolve(process.cwd(), "uploads");
 
 const router: IRouter = Router();
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
@@ -140,10 +145,19 @@ async function conversationWithLastMessage(phoneNumber: string) {
     .orderBy(desc(conversationMessagesTable.createdAt))
     .limit(1);
   const settings = await getBotSettings();
-  return serializeConversation(
-    { ...conversation, lastMessage: lastMessage?.body ?? null },
-    settings.handoverTimeoutHours,
-  );
+  return {
+    ...serializeConversation(
+      { ...conversation, lastMessage: lastMessage?.body ?? null },
+      settings.handoverTimeoutHours,
+    ),
+    gender: conversation.gender,
+    examYear: conversation.examYear,
+    hometownDistrict: conversation.hometownDistrict,
+    otherSubjects: conversation.otherSubjects,
+    classType: conversation.classType,
+    physicalLocation: conversation.physicalLocation,
+    onboardingStatus: conversation.onboardingStatus,
+  };
 }
 
 function serializeDelivery(row: typeof tuteDeliveriesTable.$inferSelect) {
@@ -814,9 +828,54 @@ router.post("/admin/suggestions/:id/reject", requireAdmin, async (req, res): Pro
   res.json(RejectSuggestedKnowledgeItemResponse.parse(serializeSuggestion(updated)));
 });
 
+router.post("/admin/suggestions/reflect", requireAdmin, async (req, res): Promise<void> => {
+  const hoursBack =
+    typeof req.body?.hoursBack === "number" && req.body.hoursBack > 0
+      ? Math.min(168, req.body.hoursBack)
+      : 48;
+  try {
+    const result = await runBatchCognitiveReflection(hoursBack);
+    res.json({
+      ok: true,
+      analyzedConversations: result.analyzedConversations,
+      suggestionsCreated: result.suggestionsCreated,
+    });
+  } catch (err) {
+    res.status(500).json({
+      error: err instanceof Error ? err.message : "Failed to run cognitive reflection.",
+    });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Unified inbox: thread view, dashboard reply, handover, bot settings, live events
 // ---------------------------------------------------------------------------
+
+router.get("/admin/media/:filename", requireAdmin, (req, res): void => {
+  const rawName = String(req.params.filename ?? "");
+  const safeName = path.basename(rawName).replace(/[^a-zA-Z0-9._-]/g, "");
+  if (!safeName) {
+    res.status(400).json({ error: "Invalid media filename" });
+    return;
+  }
+  const filePath = path.join(UPLOADS_DIR, safeName);
+  if (!fs.existsSync(filePath)) {
+    res.status(404).json({ error: "Media file not found" });
+    return;
+  }
+  const ext = path.extname(safeName).toLowerCase();
+  const mime =
+    ext === ".png"
+      ? "image/png"
+      : ext === ".webp"
+        ? "image/webp"
+        : ext === ".gif"
+          ? "image/gif"
+          : "image/jpeg";
+  res.setHeader("Content-Type", mime);
+  res.setHeader("Cache-Control", "private, max-age=86400");
+  fs.createReadStream(filePath).pipe(res);
+});
 
 router.get("/conversations/:phoneNumber/messages", requireAdmin, async (req, res): Promise<void> => {
   const phone = await resolveConversationPhone(String(req.params.phoneNumber ?? ""));
@@ -833,30 +892,50 @@ router.get("/conversations/:phoneNumber/messages", requireAdmin, async (req, res
   const conversation = await conversationWithLastMessage(phone);
   res.json({
     conversation,
-    messages: rows.reverse().map((row) => ({
-      id: row.id,
-      direction: row.direction,
-      body: row.body,
-      deliveryStatus: row.deliveryStatus,
-      createdAt: row.createdAt.toISOString(),
-      sender:
-        row.direction === "inbound"
-          ? "student"
-          : row.externalId?.startsWith("almedia_dash_")
-            ? "admin"
-            : row.externalId?.startsWith("almedia_")
-              ? "meedi"
-              : "admin",
-    })),
+    messages: rows.reverse().map((row) => {
+      const parsedMedia = parseMediaMessageBody(row.body);
+      return {
+        id: row.id,
+        direction: row.direction,
+        body: parsedMedia.mediaUrl ? parsedMedia.caption : row.body,
+        mediaUrl: parsedMedia.mediaUrl,
+        deliveryStatus: row.deliveryStatus,
+        createdAt: row.createdAt.toISOString(),
+        sender:
+          row.direction === "inbound"
+            ? "student"
+            : row.externalId?.startsWith("almedia_dash_")
+              ? "admin"
+              : row.externalId?.startsWith("almedia_")
+                ? "meedi"
+                : "admin",
+      };
+    }),
   });
 });
 
 router.post("/conversations/:phoneNumber/send-message", requireAdmin, async (req, res): Promise<void> => {
   const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
-  if (!text || text.length > 4000) {
-    res.status(400).json({ error: "Message text is required (max 4000 characters)." });
+  const imageData = typeof req.body?.imageData === "string" ? req.body.imageData.trim() : "";
+  const imageName = typeof req.body?.imageName === "string" ? req.body.imageName.trim() : "image.jpg";
+  const imageMimeType =
+    typeof req.body?.imageMimeType === "string" && req.body.imageMimeType.startsWith("image/")
+      ? req.body.imageMimeType.trim()
+      : "image/jpeg";
+  const imageUrl =
+    typeof req.body?.imageUrl === "string" && /^https?:\/\//i.test(req.body.imageUrl.trim())
+      ? req.body.imageUrl.trim()
+      : "";
+
+  if (!text && !imageData && !imageUrl) {
+    res.status(400).json({ error: "Message text or an image attachment is required." });
     return;
   }
+  if (text.length > 4000) {
+    res.status(400).json({ error: "Message text cannot exceed 4000 characters." });
+    return;
+  }
+
   const phone = await resolveConversationPhone(String(req.params.phoneNumber ?? ""));
   if (!phone) {
     res.status(404).json({ error: "Conversation not found" });
@@ -868,9 +947,51 @@ router.post("/conversations/:phoneNumber/send-message", requireAdmin, async (req
   }
 
   const externalId = `almedia_dash_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  let providerMessageId: string | null;
+  let providerMessageId: string | null = null;
+  let storedBody = text;
+  let savedMediaUrl: string | null = null;
+
   try {
-    providerMessageId = await sendYCloudText(phone, text, externalId);
+    if (imageData) {
+      const commaIdx = imageData.indexOf(",");
+      const base64Clean = commaIdx >= 0 ? imageData.slice(commaIdx + 1) : imageData;
+      const buffer = Buffer.from(base64Clean, "base64");
+      if (!buffer.length || buffer.length > 10 * 1024 * 1024) {
+        res.status(400).json({ error: "Image file must be under 10 MB." });
+        return;
+      }
+
+      fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+      const ext =
+        imageMimeType === "image/png"
+          ? ".png"
+          : imageMimeType === "image/webp"
+            ? ".webp"
+            : imageMimeType === "image/gif"
+              ? ".gif"
+              : ".jpg";
+      const localFileName = `media_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
+      fs.writeFileSync(path.join(UPLOADS_DIR, localFileName), buffer);
+      savedMediaUrl = `/api/admin/media/${localFileName}`;
+
+      const ycloudMediaId = await uploadYCloudMedia(buffer, imageMimeType, imageName || localFileName);
+      providerMessageId = await sendYCloudImage(
+        phone,
+        { id: ycloudMediaId, caption: text || undefined },
+        externalId,
+      );
+      storedBody = formatMediaMessageBody(savedMediaUrl, text);
+    } else if (imageUrl) {
+      providerMessageId = await sendYCloudImage(
+        phone,
+        { link: imageUrl, caption: text || undefined },
+        externalId,
+      );
+      savedMediaUrl = imageUrl;
+      storedBody = formatMediaMessageBody(imageUrl, text);
+    } else {
+      providerMessageId = await sendYCloudText(phone, text, externalId);
+    }
   } catch (error) {
     req.log.error({ err: error instanceof Error ? error.message : String(error) }, "Dashboard reply failed");
     res.status(502).json({ error: "WhatsApp delivery failed. Please try again." });
@@ -882,7 +1003,7 @@ router.post("/conversations/:phoneNumber/send-message", requireAdmin, async (req
     .values({
       phoneNumber: phone,
       direction: "outbound",
-      body: text,
+      body: storedBody,
       externalId,
       providerMessageId: providerMessageId ?? undefined,
       deliveryStatus: "sent",
@@ -892,13 +1013,23 @@ router.post("/conversations/:phoneNumber/send-message", requireAdmin, async (req
 
   // Dashboard reply = admin interruption: human mode + rolling lock refresh.
   await lockForAdmin(phone);
-  await captureShadowLearning(phone, text);
+  if (text) {
+    await captureShadowLearning(phone, text);
+  }
   emitDashboardEvent("message.outbound", { phoneNumber: phone });
 
   res.json({
     ok: true,
     message: saved
-      ? { id: saved.id, direction: saved.direction, body: saved.body, deliveryStatus: saved.deliveryStatus, createdAt: saved.createdAt.toISOString(), sender: "admin" }
+      ? {
+          id: saved.id,
+          direction: saved.direction,
+          body: text,
+          mediaUrl: savedMediaUrl,
+          deliveryStatus: saved.deliveryStatus,
+          createdAt: saved.createdAt.toISOString(),
+          sender: "admin",
+        }
       : null,
     conversation: await conversationWithLastMessage(phone),
   });

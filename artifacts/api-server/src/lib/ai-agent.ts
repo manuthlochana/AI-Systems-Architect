@@ -9,27 +9,37 @@ import {
   type FunctionDeclaration,
   type Part,
 } from "@google/genai";
-import { and, desc, eq, ilike, inArray, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 import {
   conversationMessagesTable,
   conversationsTable,
   db,
   dynamicContentTable,
-  tuteDeliveriesTable,
   type BotSettings,
+  type Conversation,
 } from "@workspace/db";
 import { effectivePersona, ESCALATION_REPLY, getBotSettings, GREETING_NOTICE } from "./bot-settings";
 import { escalateConversation } from "./conversation-state";
 import { logger } from "./logger";
-import { sanitizePhone9Digits } from "./spreadsheet";
 
-interface AssistantContext {
+export interface AssistantContext {
   phoneNumber: string;
   studentName: string | null;
   batch: "2027" | "2028" | "unknown";
   providerMessageId: string;
   /** Newline-joined text of the CURRENT burst only; entity extraction is bound to this. */
   turnText?: string;
+}
+
+export interface ReplyBubble {
+  text: string;
+  delayMs: number;
+}
+
+export interface StudentReplyResult {
+  text: string;
+  messages: ReplyBubble[];
+  lastIntent: string;
 }
 
 const KNOWLEDGE_BASE_PATHS = [
@@ -117,7 +127,49 @@ ${formatted}
   }
 }
 
-export async function buildSystemInstruction(settings?: BotSettings): Promise<string> {
+function formatStudentProfileMemory(
+  profile: Conversation | undefined,
+  context: AssistantContext,
+): string {
+  const phone = profile?.phoneNumber ?? context.phoneNumber;
+  const name = profile?.studentName ?? context.studentName ?? "Unknown";
+  const gender = profile?.gender ?? "unknown";
+  const examYear =
+    profile?.examYear ||
+    (profile?.batch && profile.batch !== "unknown" ? profile.batch : "Unknown");
+  const district = profile?.hometownDistrict || "Unknown";
+  const otherSubjects = profile?.otherSubjects || "Unknown";
+  const classType = profile?.classType ?? "undecided";
+  const physicalLocation = profile?.physicalLocation || "None";
+  const onboardingStatus =
+    profile?.onboardingStatus ??
+    (profile?.studentType === "existing" ? "onboarded" : "new_lead");
+
+  const statusGuidance =
+    onboardingStatus === "onboarded"
+      ? "EXISTING ENROLLED STUDENT (Academic Support & Care Mode): Do NOT ask onboarding/profiling questions and do NOT push registration or payment instructions unless the student explicitly asks about monthly fees."
+      : `NEW / ONBOARDING STUDENT (${onboardingStatus}): Always answer the student's immediate question first. If natural, ask AT MOST ONE friendly follow-up question to discover missing fields (Exam Year -> District / Class Type). Once Exam Year and Class Type are known, guide them naturally on how to join.`;
+
+  return `## 🧠 CURRENT STUDENT PROFILE MEMORY (PERMANENT DATABASE STATE)
+Profile -> Phone: ${phone}, Name: ${name}, Gender: ${gender}, Exam: ${examYear}, District: ${district}, OtherSubjects: ${otherSubjects}, ClassType: ${classType}, PhysicalLocation: ${physicalLocation}, Status: ${onboardingStatus}
+
+- Strict Memory Rule: NEVER re-ask a question for any field that already has a value above (e.g., if Exam is 2027 or District is known, never ask for it again).
+- Mode Directive: ${statusGuidance}
+- Whenever the student reveals any new or updated profile detail (exam year, district, online vs physical preference, physical center, gender, other subjects, or that they are already an enrolled student), call \`update_student_profile\`.`;
+}
+
+const BURST_OUTPUT_INSTRUCTION = `## 💬 MULTI-MESSAGE CONVERSATIONAL CADENCE (JSON OUTPUT FORMAT)
+When sending your final reply to the student (after any tool calls), format your output as a JSON object with 1 to 3 short, natural WhatsApp message bubbles:
+{"messages": [{"text": "First short message (1-2 friendly sentences).", "delayMs": 800}, {"text": "Optional second short message (e.g., a gentle follow-up question or link).", "delayMs": 1000}]}
+- Each bubble MUST be 1–2 concise sentences in natural conversational Sinhala (or Singlish if they wrote in English).
+- Use 1 bubble for simple direct answers, or 2–3 bubbles when answering a question AND asking one natural onboarding question or sharing a link.
+- Set \`delayMs\` between 600 and 1200 for each bubble.`;
+
+export async function buildSystemInstruction(
+  settings?: BotSettings,
+  studentProfile?: Conversation,
+  context?: AssistantContext,
+): Promise<string> {
   const botSettings = settings ?? (await getBotSettings());
   const dynamicAnnouncements = await fetchDynamicAnnouncements();
   const kb = readKnowledgeBase();
@@ -126,34 +178,66 @@ export async function buildSystemInstruction(settings?: BotSettings): Promise<st
     ? `${dynamicAnnouncements}\n\n---\n\n${kb}`
     : kb;
 
-  // Persona/guidelines live in the database (bot_settings) so the dashboard can edit them live.
+  const profileSection = context
+    ? `\n\n---\n\n${formatStudentProfileMemory(studentProfile, context)}`
+    : "";
+
   return `${knowledgeSection}
 
 ---
-${effectivePersona(botSettings)}`;
+${effectivePersona(botSettings)}${profileSection}
+
+---
+${BURST_OUTPUT_INSTRUCTION}`;
 }
 
 const FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
   {
-    name: "check_tute_delivery",
+    name: "update_student_profile",
     description:
-      "Look up tute / book dispatch records. Search ONLY by a phone number, name or tracking number that the student wrote in their CURRENT message. Never reuse details from earlier messages. If the student asks about their own number without typing one, call with no search fields.",
+      "Save or update discovered student profile attributes in permanent memory whenever the student mentions their A/L exam year, hometown/district, class preference (online vs physical), physical hall location, other A/L subjects, gender, or onboarding status.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        phone: { type: Type.STRING, description: "Sri Lankan phone number typed in the current message, if any." },
-        name: { type: Type.STRING, description: "Student name typed in the current message, exactly as written (Sinhala or English), if any." },
-        trackingNumber: { type: Type.STRING, description: "Tracking number typed in the current message, if any." },
-        month: { type: Type.STRING, description: "Optional month in YYYY-MM format." },
-        delivery_wave: { type: Type.STRING, enum: ["Wave 1", "Wave 2", "Wave 3", "Wave 4"], description: "Optional wave filter." },
-        item_type: { type: Type.STRING, enum: ["Monthly Tute", "Special Book"], description: "Optional item filter." },
+        gender: {
+          type: Type.STRING,
+          enum: ["male", "female", "unknown"],
+          description: "Inferred or stated student gender (male -> Malli, female -> Nangi).",
+        },
+        exam_year: {
+          type: Type.STRING,
+          description: "A/L exam year such as '2027' or '2028'.",
+        },
+        hometown_district: {
+          type: Type.STRING,
+          description: "Student's hometown or district in Sri Lanka (e.g., 'Matara', 'Galle', 'Hambantota', 'Colombo', 'Kandy', 'Kurunegala').",
+        },
+        other_subjects: {
+          type: Type.STRING,
+          description: "Comma-separated other A/L subjects the student studies (e.g., 'Sinhala, BC').",
+        },
+        class_type: {
+          type: Type.STRING,
+          enum: ["online", "physical", "undecided"],
+          description: "Whether the student is attending online or physical hall classes.",
+        },
+        physical_location: {
+          type: Type.STRING,
+          enum: ["matara_sipyana", "tangalle_maarga", "galle_ics"],
+          description: "Physical hall center if attending physical classes (Matara Sipyana, Tangalle Maarga, or Galle ICS).",
+        },
+        onboarding_status: {
+          type: Type.STRING,
+          enum: ["new_lead", "profiling", "payment_pending", "onboarded"],
+          description: "Set to 'onboarded' if the student indicates they are already registered/paying, or 'payment_pending' once ready to register.",
+        },
       },
     },
   },
   {
     name: "escalate_to_human",
     description:
-      "Hand the conversation to the office staff and mute the bot. Use for actionable requests (payment slip verification, password reset, login errors, Zoom link requests), fee relief / free card requests, frustrated students, or questions that are not answered by the Knowledge Base.",
+      "Hand the conversation to the office staff and mute the bot. Use for actionable requests (payment slip verification, password reset, login errors, Zoom link requests), missing/delayed tute parcels, fee relief / free card requests, frustrated students, or questions that are not answered by the Knowledge Base.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -165,38 +249,10 @@ const FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
   },
 ];
 
-function monthNow(): string {
-  return new Date().toISOString().slice(0, 7);
-}
-
 function stringArg(args: Record<string, unknown>, key: string, maxLength = 300): string {
   const value = args[key];
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
 }
-
-function detectCourierService(trackingNumber: string): string {
-  const clean = trackingNumber.trim().toUpperCase();
-  if (
-    clean.endsWith("LK") ||
-    clean.startsWith("CP") ||
-    clean.startsWith("PO") ||
-    clean.startsWith("SLP")
-  ) {
-    return "Sri Lanka Post (ලංකා තැපැල් සේවය)";
-  }
-  if (clean.includes("PRX") || clean.includes("PROMPT") || clean.startsWith("PX")) {
-    return "PromptX Courier";
-  }
-  if (clean.startsWith("DMX") || clean.includes("DOMEX")) {
-    return "Domex Courier";
-  }
-  if (clean.startsWith("KMB") || clean.includes("KOOMBIYO")) {
-    return "Koombiyo Delivery";
-  }
-  return "Sri Lanka Post / Registered Courier (ලියාපදිංචි තැපැල්)";
-}
-
-const SINHALA_CHAR = /[\u0D80-\u0DFF]/;
 
 /**
  * Extracts a Sri Lankan mobile number from free text and returns its 9-digit core
@@ -207,200 +263,114 @@ export function extractSriLankanPhone(text: string): string | null {
   return match ? `${match[1]}${match[2]}${match[3]}` : null;
 }
 
-/** Both stored/typed formats for a 9-digit core: 07XXXXXXXX and 947XXXXXXXX (plus bare / +94 forms). */
-function phoneFormats(core: string): string[] {
-  return [`0${core}`, `94${core}`, core, `+94${core}`];
-}
+const VALID_GENDERS = new Set(["male", "female", "unknown"]);
+const VALID_CLASS_TYPES = new Set(["online", "physical", "undecided"]);
+const VALID_LOCATIONS = new Set(["matara_sipyana", "tangalle_maarga", "galle_ics"]);
+const VALID_STATUSES = new Set(["new_lead", "profiling", "payment_pending", "onboarded"]);
 
-const OWN_NUMBER_REQUEST =
-  /(මගේ|mage|my)\s*(නම්බර්|නම්බරය|නම්බර|අංකය|අංකයට|number|no\b|nambar|num\b)/i;
-
-function escapeLike(value: string): string {
-  return value.replace(/[\\%_]/g, (c) => `\\${c}`);
-}
-
-/** Turns a Sinhala-script name into 2-3 phonetic English spellings using Gemini. */
-async function transliterateName(client: GoogleGenAI, name: string): Promise<string[]> {
-  try {
-    const response = await generateContentWithFallback(client, {
-      contents: [
-        {
-          role: "user",
-          parts: [
-            {
-              text: `Transliterate this Sinhala personal name into 2 or 3 plausible English (Latin) spellings as they would appear in a Sri Lankan student register (e.g. "අවිශ්ක මලින්ද" -> ["Awishka Malinda","Avishka Malinda"]). Reply with ONLY a JSON array of strings.\n\nName: ${name}`,
-            },
-          ],
-        },
-      ],
-      config: {
-        systemInstruction: "You transliterate Sinhala names into English. Output strictly a JSON array of strings.",
-        responseMimeType: "application/json",
-        temperature: 0,
-      },
-    });
-    const parsed: unknown = JSON.parse(response.text?.trim() || "[]");
-    if (Array.isArray(parsed)) {
-      return parsed
-        .filter((v): v is string => typeof v === "string")
-        .map((v) => v.replace(/[^A-Za-z\s.'-]/g, " ").replace(/\s+/g, " ").trim())
-        .filter((v) => v.length >= 3)
-        .slice(0, 3);
-    }
-  } catch (err) {
-    logger.warn({ err: err instanceof Error ? err.message : String(err) }, "Name transliteration failed");
-  }
-  return [];
-}
-
-async function nameConditions(client: GoogleGenAI, name: string) {
-  const variants = SINHALA_CHAR.test(name) ? await transliterateName(client, name) : [name];
-  const unique = [...new Set(variants.map((v) => v.replace(/[^A-Za-z\s.'-]/g, " ").replace(/\s+/g, " ").trim()))]
-    .filter((v) => v.length >= 3);
-  if (unique.length) {
-    logger.info({ name, variants: unique }, "[Tute Search] Name variants");
-  }
-  const conditions = [];
-  for (const variant of unique) {
-    conditions.push(ilike(tuteDeliveriesTable.studentName, `%${escapeLike(variant)}%`));
-    const tokens = variant.split(" ").filter((t) => t.length >= 3);
-    if (tokens.length > 1) {
-      conditions.push(
-        and(...tokens.map((t) => ilike(tuteDeliveriesTable.studentName, `%${escapeLike(t)}%`))),
-      );
-    }
-  }
-  return conditions;
-}
-
-async function checkDelivery(
-  client: GoogleGenAI,
+async function executeUpdateStudentProfile(
   context: AssistantContext,
   args: Record<string, unknown>,
-) {
-  const turnText = context.turnText ?? "";
-  const turnLower = turnText.toLowerCase();
-
-  // Entity extraction is bound STRICTLY to the current turn (no sticky identity).
-  let phoneCore = extractSriLankanPhone(turnText);
-  if (!phoneCore) {
-    const argPhone = extractSriLankanPhone(stringArg(args, "phone", 40));
-    // Accept a model-supplied phone only if its digits really appear in the current message.
-    if (argPhone && turnText.replace(/\D/g, "").includes(argPhone)) phoneCore = argPhone;
-  }
-
-  let name = stringArg(args, "name", 100);
-  if (name && !(turnLower.includes(name.toLowerCase()) || SINHALA_CHAR.test(turnText))) name = "";
-  // A phone number without a name queries ONLY by phone.
-  if (phoneCore) name = "";
-
-  let trackingNumber = stringArg(args, "trackingNumber", 60);
-  if (trackingNumber && !turnLower.includes(trackingNumber.toLowerCase())) trackingNumber = "";
-
-  let searchedBy: "phone" | "name" | "tracking" | "sender" | null = null;
-  let identity;
-  if (phoneCore) {
-    searchedBy = "phone";
-    identity = or(
-      inArray(tuteDeliveriesTable.phoneNumber, phoneFormats(phoneCore)),
-      sql`right(regexp_replace(${tuteDeliveriesTable.phoneNumber}, '\\D', '', 'g'), 9) = ${phoneCore}`,
-    );
-  } else if (trackingNumber) {
-    searchedBy = "tracking";
-    identity = sql`lower(${tuteDeliveriesTable.trackingNumber}) = ${trackingNumber.toLowerCase()}`;
-  } else if (name) {
-    searchedBy = "name";
-    const conditions = await nameConditions(client, name);
-    if (conditions.length) identity = or(...conditions);
-  } else if (OWN_NUMBER_REQUEST.test(turnText)) {
-    // The ONLY case where the sender's own number is used: explicit "my number" request.
-    searchedBy = "sender";
-    const core = sanitizePhone9Digits(context.phoneNumber);
-    identity = or(
-      inArray(tuteDeliveriesTable.phoneNumber, phoneFormats(core)),
-      sql`right(regexp_replace(${tuteDeliveriesTable.phoneNumber}, '\\D', '', 'g'), 9) = ${core}`,
-    );
-  }
-
-  if (!identity || !searchedBy) {
-    return {
-      found: false,
-      needInfo: true,
-      message:
-        "Ask the student, in one short sentence, to send the phone number (or full name) the tute was registered with.",
-    };
-  }
-  logger.info({ phone: context.phoneNumber, searchedBy, phoneCore }, "[Tute Search] Executing lookup");
-
-  const requestedMonth = stringArg(args, "month", 7);
-  const explicitMonth = /^\d{4}-\d{2}$/.test(requestedMonth) ? requestedMonth : null;
-  const wave = stringArg(args, "delivery_wave", 20);
-  const itemType = stringArg(args, "item_type", 40);
-  const filters = [
-    identity,
-    ...(wave ? [eq(tuteDeliveriesTable.deliveryWave, wave)] : []),
-    ...(itemType ? [eq(tuteDeliveriesTable.itemType, itemType)] : []),
-  ];
-
-  let month = explicitMonth ?? monthNow();
-  let rows = await db
+): Promise<Record<string, unknown>> {
+  const [existing] = await db
     .select()
-    .from(tuteDeliveriesTable)
-    .where(and(...filters, eq(tuteDeliveriesTable.month, month)))
-    .orderBy(tuteDeliveriesTable.deliveryWave, tuteDeliveriesTable.itemType)
-    .limit(20);
+    .from(conversationsTable)
+    .where(eq(conversationsTable.phoneNumber, context.phoneNumber))
+    .limit(1);
 
-  if (!rows.length && !explicitMonth) {
-    // Fall back to the most recent month that has records for this identity
-    const [latest] = await db
-      .select({ month: tuteDeliveriesTable.month })
-      .from(tuteDeliveriesTable)
-      .where(identity)
-      .orderBy(desc(tuteDeliveriesTable.createdAt))
-      .limit(1);
-    if (latest?.month) {
-      month = latest.month;
-      rows = await db
-        .select()
-        .from(tuteDeliveriesTable)
-        .where(and(...filters, eq(tuteDeliveriesTable.month, month)))
-        .orderBy(tuteDeliveriesTable.deliveryWave, tuteDeliveriesTable.itemType)
-        .limit(20);
+  const patch: Partial<typeof conversationsTable.$inferInsert> = {};
+
+  const gender = stringArg(args, "gender", 20).toLowerCase();
+  if (VALID_GENDERS.has(gender)) {
+    patch.gender = gender as "male" | "female" | "unknown";
+  }
+
+  const examYearRaw = stringArg(args, "exam_year", 20) || (typeof args.exam_year === "number" ? String(args.exam_year) : "");
+  if (examYearRaw) {
+    const yearMatch = examYearRaw.match(/202[6-9]/);
+    const parsedYear = Number.parseInt(yearMatch ? yearMatch[0] : examYearRaw, 10);
+    if (Number.isFinite(parsedYear) && parsedYear >= 2025 && parsedYear <= 2032) {
+      patch.examYear = parsedYear;
+      if (parsedYear === 2027 || parsedYear === 2028) {
+        patch.batch = String(parsedYear) as "2027" | "2028";
+      }
     }
   }
 
-  if (!rows.length) {
-    return {
-      found: false,
-      month,
-      message:
-        "No delivery record exists for the details given. Tell the student briefly, and ask them to re-check the phone number. If they already retried, call escalate_to_human.",
-    };
+  const district = stringArg(args, "hometown_district", 100);
+  if (district) {
+    patch.hometownDistrict = district;
   }
 
-  // A name can match several different students: never reveal parcels until the phone is confirmed.
-  if (searchedBy === "name" && new Set(rows.map((r) => r.phoneNumber)).size > 1) {
-    return {
-      found: false,
-      ambiguous: true,
-      message:
-        "Several students match this name. Ask the student, in one short sentence, to send the registered phone number instead.",
-    };
+  const otherSubjects = stringArg(args, "other_subjects", 200);
+  if (otherSubjects) {
+    patch.otherSubjects = otherSubjects;
+  }
+
+  const classType = stringArg(args, "class_type", 30).toLowerCase();
+  if (VALID_CLASS_TYPES.has(classType)) {
+    patch.classType = classType as "online" | "physical" | "undecided";
+  }
+
+  const physicalLocation = stringArg(args, "physical_location", 40).toLowerCase();
+  if (VALID_LOCATIONS.has(physicalLocation)) {
+    patch.physicalLocation = physicalLocation as
+      | "matara_sipyana"
+      | "tangalle_maarga"
+      | "galle_ics";
+    if (!patch.classType) {
+      patch.classType = "physical";
+    }
+  }
+
+  const explicitStatus = stringArg(args, "onboarding_status", 30).toLowerCase();
+  if (VALID_STATUSES.has(explicitStatus)) {
+    patch.onboardingStatus = explicitStatus as
+      | "new_lead"
+      | "profiling"
+      | "payment_pending"
+      | "onboarded";
+  } else if (existing?.onboardingStatus !== "onboarded") {
+    const mergedExamYear = patch.examYear ?? existing?.examYear;
+    const mergedClassType = patch.classType ?? existing?.classType ?? "undecided";
+    if (mergedExamYear && mergedClassType !== "undecided") {
+      patch.onboardingStatus = "payment_pending";
+    } else if (
+      mergedExamYear ||
+      patch.hometownDistrict ||
+      existing?.hometownDistrict ||
+      mergedClassType !== "undecided"
+    ) {
+      patch.onboardingStatus = "profiling";
+    }
+  }
+
+  if (patch.onboardingStatus === "onboarded") {
+    patch.studentType = "existing";
+  }
+
+  if (Object.keys(patch).length > 0) {
+    await db
+      .update(conversationsTable)
+      .set(patch)
+      .where(eq(conversationsTable.phoneNumber, context.phoneNumber));
+    logger.info(
+      { phone: context.phoneNumber, updatedFields: patch },
+      "[Student Profile] Updated permanent student profile memory",
+    );
   }
 
   return {
-    found: true,
-    month,
-    searchedBy,
-    records: rows.map((row) => ({
-      itemType: row.itemType,
-      deliveryWave: row.deliveryWave,
-      trackingNumber: row.trackingNumber,
-      courierService: detectCourierService(row.trackingNumber),
-      deliveryStatus: row.status,
-      dispatchedDate: row.createdAt ? new Date(row.createdAt).toLocaleDateString("en-CA") : "Dispatched",
-      ...(searchedBy === "phone" || searchedBy === "sender" ? { address: row.address } : {}),
-    })),
+    updated: true,
+    profile: {
+      gender: patch.gender ?? existing?.gender ?? "unknown",
+      examYear: patch.examYear ?? existing?.examYear ?? null,
+      hometownDistrict: patch.hometownDistrict ?? existing?.hometownDistrict ?? null,
+      otherSubjects: patch.otherSubjects ?? existing?.otherSubjects ?? null,
+      classType: patch.classType ?? existing?.classType ?? "undecided",
+      physicalLocation: patch.physicalLocation ?? existing?.physicalLocation ?? null,
+      onboardingStatus: patch.onboardingStatus ?? existing?.onboardingStatus ?? "new_lead",
+    },
   };
 }
 
@@ -410,13 +380,12 @@ interface ToolOutcome {
 }
 
 async function executeTool(
-  client: GoogleGenAI,
   name: string,
   args: Record<string, unknown>,
   context: AssistantContext,
 ): Promise<ToolOutcome> {
-  if (name === "check_tute_delivery") {
-    return { result: await checkDelivery(client, context, args) };
+  if (name === "update_student_profile") {
+    return { result: await executeUpdateStudentProfile(context, args) };
   }
   if (name === "escalate_to_human") {
     // The conversation id argument is ignored on purpose: only the current chat can be escalated.
@@ -425,6 +394,80 @@ async function executeTool(
     return { result: { escalated: true, reply: ESCALATION_REPLY }, escalated: true };
   }
   return { result: { error: `Tool ${name} is not supported.` } };
+}
+
+function clampDelayMs(value: unknown, textLength = 60): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(600, Math.min(1200, Math.round(value)));
+  }
+  const estimated = 600 + Math.min(600, Math.round(textLength * 4));
+  return Math.max(600, Math.min(1200, estimated));
+}
+
+export function parseReplyBubbles(rawText: string): ReplyBubble[] {
+  const trimmed = rawText.trim();
+  if (!trimmed) {
+    return [{ text: GREETING_NOTICE, delayMs: 800 }];
+  }
+
+  // Strip optional markdown code fences around JSON
+  const fenceStripped = trimmed
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  const jsonMatch = fenceStripped.match(/\{[\s\S]*"messages"\s*:\s*\[[\s\S]*\][\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed: unknown = JSON.parse(jsonMatch[0]);
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        "messages" in parsed &&
+        Array.isArray((parsed as { messages: unknown }).messages)
+      ) {
+        const rawMessages = (parsed as { messages: unknown[] }).messages;
+        const bubbles: ReplyBubble[] = [];
+        for (const item of rawMessages) {
+          if (item && typeof item === "object" && "text" in item) {
+            const text = String((item as { text: unknown }).text ?? "").trim();
+            if (text) {
+              bubbles.push({
+                text,
+                delayMs: clampDelayMs(
+                  (item as { delayMs?: unknown }).delayMs,
+                  text.length,
+                ),
+              });
+            }
+          } else if (typeof item === "string" && item.trim()) {
+            const text = item.trim();
+            bubbles.push({ text, delayMs: clampDelayMs(undefined, text.length) });
+          }
+        }
+        if (bubbles.length > 0) {
+          return bubbles.slice(0, 4);
+        }
+      }
+    } catch {
+      // Fall through to natural paragraph splitting
+    }
+  }
+
+  // Fallback: split multi-paragraph plain text into 1-3 natural bubbles
+  const paragraphs = fenceStripped
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  if (paragraphs.length > 1) {
+    return paragraphs.slice(0, 3).map((text) => ({
+      text,
+      delayMs: clampDelayMs(undefined, text.length),
+    }));
+  }
+
+  return [{ text: fenceStripped, delayMs: clampDelayMs(undefined, fenceStripped.length) }];
 }
 
 const CANDIDATE_MODELS = [
@@ -471,25 +514,32 @@ async function generateContentWithFallback(
 
 export async function generateStudentReply(
   context: AssistantContext,
-): Promise<{ text: string; lastIntent: string }> {
+): Promise<StudentReplyResult> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is not configured");
 
-  const history = await db
-    .select({
-      direction: conversationMessagesTable.direction,
-      body: conversationMessagesTable.body,
-      createdAt: conversationMessagesTable.createdAt,
-    })
-    .from(conversationMessagesTable)
-    .where(
-      and(
-        eq(conversationMessagesTable.phoneNumber, context.phoneNumber),
-        ne(conversationMessagesTable.deliveryStatus, "closed_silently"),
-      ),
-    )
-    .orderBy(desc(conversationMessagesTable.createdAt))
-    .limit(10);
+  const [[studentProfile], history] = await Promise.all([
+    db
+      .select()
+      .from(conversationsTable)
+      .where(eq(conversationsTable.phoneNumber, context.phoneNumber))
+      .limit(1),
+    db
+      .select({
+        direction: conversationMessagesTable.direction,
+        body: conversationMessagesTable.body,
+        createdAt: conversationMessagesTable.createdAt,
+      })
+      .from(conversationMessagesTable)
+      .where(
+        and(
+          eq(conversationMessagesTable.phoneNumber, context.phoneNumber),
+          ne(conversationMessagesTable.deliveryStatus, "closed_silently"),
+        ),
+      )
+      .orderBy(desc(conversationMessagesTable.createdAt))
+      .limit(12),
+  ]);
 
   // Consecutive student messages (a debounced burst) become ONE consolidated user turn.
   const contents: Content[] = [];
@@ -521,7 +571,7 @@ export async function generateStudentReply(
 
   const client = new GoogleGenAI({ apiKey });
   const settings = await getBotSettings();
-  const systemInstruction = await buildSystemInstruction(settings);
+  const systemInstruction = await buildSystemInstruction(settings, studentProfile, context);
   const config: GenerationConfig = {
     systemInstruction,
     tools: [{ functionDeclarations: FUNCTION_DECLARATIONS }],
@@ -549,7 +599,7 @@ export async function generateStudentReply(
           : {};
       lastIntent = name;
       try {
-        const outcome = await executeTool(client, name, args, context);
+        const outcome = await executeTool(name, args, context);
         if (outcome.escalated) escalated = true;
         functionResponses.push({
           functionResponse: {
@@ -582,23 +632,35 @@ export async function generateStudentReply(
     response = await generateContentWithFallback(client, { contents, config });
   }
 
-  if (escalated) return { text: ESCALATION_REPLY, lastIntent };
+  if (escalated) {
+    return {
+      text: ESCALATION_REPLY,
+      messages: [{ text: ESCALATION_REPLY, delayMs: 800 }],
+      lastIntent,
+    };
+  }
 
-  let text = response.text?.trim() ?? "";
+  const rawText = response.text?.trim() ?? "";
+  const bubbles = parseReplyBubbles(rawText);
+  const combinedText = bubbles.map((b) => b.text).join("\n\n");
+
   if (
-    /https?:\/\/[^\s]*zoom\.(us|com)\/[^\s]+/i.test(text) ||
-    (/(zoom\.us|zoom\.com|zoom link|zoom password|zoom passcode|meeting id)/i.test(text) && /link|passcode|password/i.test(text))
+    /https?:\/\/[^\s]*zoom\.(us|com)\/(?:j|my|wc)\/[^\s]+/i.test(combinedText) ||
+    (/(zoom\.us|zoom\.com|zoom link|zoom password|zoom passcode|meeting id)/i.test(combinedText) &&
+      /passcode|password|meeting id/i.test(combinedText))
   ) {
     logger.warn({ phone: context.phoneNumber }, "Sanitized accidental Zoom credentials in model output");
     await escalateConversation(context.phoneNumber, "Student requested a Zoom link / credentials");
-    return { text: ESCALATION_REPLY, lastIntent: "escalate_to_human" };
+    return {
+      text: ESCALATION_REPLY,
+      messages: [{ text: ESCALATION_REPLY, delayMs: 800 }],
+      lastIntent: "escalate_to_human",
+    };
   }
-  if (!text) {
-    logger.warn(
-      { phone: context.phoneNumber },
-      "Gemini returned empty reply text; using Meedi greeting fallback",
-    );
-    text = GREETING_NOTICE;
-  }
-  return { text, lastIntent };
+
+  return {
+    text: combinedText,
+    messages: bubbles,
+    lastIntent,
+  };
 }

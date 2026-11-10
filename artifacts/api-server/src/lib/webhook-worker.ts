@@ -3,15 +3,15 @@ import {
   conversationMessagesTable,
   conversationsTable,
   db,
-  suggestedKnowledgeItemsTable,
   webhookEventsTable,
 } from "@workspace/db";
 import { generateStudentReply } from "./ai-agent";
 import { getBotSettings } from "./bot-settings";
-import { lockForAdmin, lockKey, releaseToBot } from "./conversation-state";
+import { escalateConversation, lockForAdmin, lockKey, releaseToBot } from "./conversation-state";
 import { emitDashboardEvent, kvDrain, kvGet, kvPush } from "./kv";
 import { logger } from "./logger";
-import { normalizePhoneNumber, sanitizePhone9Digits, toPhoneKey } from "./spreadsheet";
+import { distillAndCaptureLearning, runBatchCognitiveReflection } from "./reflection";
+import { normalizePhoneNumber, toPhoneKey } from "./spreadsheet";
 import {
   isGroupChatEvent,
   isSilentInboundType,
@@ -37,7 +37,14 @@ const COLOMBO_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const DAILY_LIMIT_MESSAGE =
   "ඔබ අද දිනට හිමි පණිවිඩ සීමාව ඉක්මවා ඇත. හදිසි අවශ්‍යතාවයක් සඳහා කාර්යාලය අමතන්න: 071 016 1699.";
 
+const IMAGE_RECEIVED_ESCALATION_REPLY =
+  "ඔයා එවපු ඡායාරූපය/රිසිට්පත අපේ කාර්යාලයට ලැබුණා 🌸 සුළු වේලාවකින් අපේ සම්බන්ධීකාරකවරයෙක් එය පරීක්ෂා කරලා ඔයාට පිළිතුරක් ලබා දේවි.";
+
 type WebhookEvent = typeof webhookEventsTable.$inferSelect;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /** Start of the calendar day (Asia/Colombo) containing `at`. */
 function startOfColomboDay(at: Date): Date {
@@ -120,7 +127,7 @@ const bufferKey = (phoneKey: string) => `chat:buf:${phoneKey}`;
 
 /** Acknowledgements / sign-offs that must never trigger a reply (zero ping-pong). */
 export const CLOSING_REGEX =
-  /^(ok|okay|ok sir|okay sir|thanks|thanks sir|thank you|thank you sir|hari|hari sir|ela|ow sir|suba dawasak|bye|naa sir|thx|thnx)[\s.!🌸✨]*$/i;
+  /^(ok|okay|ok sir|okay sir|thanks|thanks sir|thank you|thank you sir|hari|hari sir|ela|ow sir|suba dawasak|bye|naa sir|thx|thnx)[\s.!🌸✨📚]*$/i;
 
 async function cancelPendingReply(phoneKey: string): Promise<void> {
   const pending = debounceQueue.get(phoneKey);
@@ -202,14 +209,42 @@ async function flushDebounced(key: string): Promise<void> {
     });
     await db
       .update(conversationsTable)
-      .set({ lastIntent: reply.lastIntent })
+      .set({ lastIntent: reply.lastIntent, lastMessageAt: new Date() })
       .where(eq(conversationsTable.phoneNumber, entry.phoneNumber));
 
-    await saveOutboundAndSend(
-      `almedia_d${key}_${entry.lastMessageDbId}`.slice(0, 120),
-      entry.phoneNumber,
-      reply.text,
-    );
+    const bubbles = reply.messages.length
+      ? reply.messages
+      : [{ text: reply.text, delayMs: 800 }];
+
+    for (let idx = 0; idx < bubbles.length; idx += 1) {
+      const bubble = bubbles[idx];
+      if (!bubble?.text.trim()) continue;
+
+      // Re-verify the admin hasn't interrupted mid-burst
+      if (idx > 0) {
+        const [latestConv] = await db
+          .select()
+          .from(conversationsTable)
+          .where(eq(conversationsTable.phoneNumber, entry.phoneNumber))
+          .limit(1);
+        if (await isBotMuted(latestConv, entry.phoneNumber, settings.handoverTimeoutHours)) {
+          break;
+        }
+      }
+
+      void sendWhatsAppTyping(
+        entry.phoneNumber,
+        idx === 0 ? entry.providerMessageId : undefined,
+      ).catch(() => {});
+
+      const clampedDelay = Math.max(600, Math.min(1200, bubble.delayMs || 800));
+      await sleep(clampedDelay);
+
+      const suffix = idx === 0 ? "" : `_b${idx}`;
+      const externalId = `almedia_d${key}_${entry.lastMessageDbId}${suffix}`.slice(0, 120);
+      await saveOutboundAndSend(externalId, entry.phoneNumber, bubble.text.trim());
+    }
+
     emitDashboardEvent("message.outbound", { phoneNumber: entry.phoneNumber });
   } catch (error) {
     // Put the burst back so a retry (or a newer burst) still covers these messages.
@@ -316,7 +351,28 @@ async function processInbound(event: WebhookEvent): Promise<void> {
     return;
   }
 
-  // Media / voice / documents (or empty text): stored for the office, never answered by the bot.
+  // Inbound image (e.g., bank payment slip, NIC/School ID, or question photo):
+  // Store image with URL for Inbox preview, escalate to human staff, and send polite confirmation.
+  if (inbound.type === "image") {
+    await cancelPendingReply(phoneKey);
+    await escalateConversation(phoneNumber, "Student sent an image / payment slip");
+    const age = Date.now() - event.receivedAt.getTime();
+    if (age <= WHATSAPP_SESSION_MS) {
+      await saveOutboundAndSend(
+        `almedia_img_${savedInbound.id}`.slice(0, 120),
+        phoneNumber,
+        IMAGE_RECEIVED_ESCALATION_REPLY,
+      );
+      emitDashboardEvent("message.outbound", { phoneNumber });
+    }
+    logger.info(
+      { phone: phoneNumber, mediaUrl: inbound.mediaUrl },
+      "[Inbound Image] Stored image message and escalated to human staff",
+    );
+    return;
+  }
+
+  // Other non-text media (voice / documents / video): stored for the office, never answered by the bot.
   if (inbound.type !== "text" || !inbound.body) {
     logger.info(
       { eventId: event.providerEventId, type: inbound.type, phone: phoneNumber },
@@ -419,42 +475,14 @@ async function claimNextEvent(): Promise<WebhookEvent | undefined> {
   return claimed;
 }
 
-/** Shadow Learning Queue: pairs the student's last question with a staff reply (never auto-consumed by the AI). */
+/**
+ * Cognitive Learning Distillation: passes human-staff interventions through the PII-scrubbing
+ * reflection engine so only anonymized, globally reusable FAQ/policy insights enter the queue.
+ */
 export async function captureShadowLearning(phoneNumber: string, staffBody: string): Promise<void> {
-  if (!staffBody || staffBody.startsWith("[WhatsApp ") || staffBody.trim().length <= 1) return;
-  try {
-    const [lastInbound] = await db
-      .select({ body: conversationMessagesTable.body })
-      .from(conversationMessagesTable)
-      .where(
-        and(
-          eq(conversationMessagesTable.phoneNumber, phoneNumber),
-          eq(conversationMessagesTable.direction, "inbound"),
-        ),
-      )
-      .orderBy(desc(conversationMessagesTable.createdAt))
-      .limit(1);
-
-    if (
-      lastInbound?.body &&
-      !lastInbound.body.startsWith("[WhatsApp ") &&
-      lastInbound.body.trim().length > 1
-    ) {
-      await db.insert(suggestedKnowledgeItemsTable).values({
-        sourceConversationId: phoneNumber,
-        studentQuestion: lastInbound.body.trim(),
-        humanStaffResponse: staffBody.trim(),
-        suggestedCategory: "faq",
-        status: "pending",
-      });
-      logger.info(
-        { phone: phoneNumber },
-        "[Shadow Learning] Captured student question and staff response into suggested_knowledge_items",
-      );
-    }
-  } catch (err) {
-    logger.warn({ err, phone: phoneNumber }, "Failed to record shadow learning suggestion");
-  }
+  void distillAndCaptureLearning(phoneNumber, staffBody).catch((err) => {
+    logger.warn({ err, phone: phoneNumber }, "Cognitive learning distillation failed");
+  });
 }
 
 async function processOutboundOrUpdate(event: WebhookEvent): Promise<void> {
@@ -614,7 +642,22 @@ export async function flushAllDebouncedReplies(): Promise<void> {
   await Promise.allSettled(keys.map((key) => flushDebounced(key)));
 }
 
+let lastNightlyReflectionDay = "";
+
 export function startWebhookWorker(): void {
   void poll();
   setInterval(() => void poll(), 5_000);
+
+  // Nightly Cognitive Reflection (runs once per Colombo calendar day after 23:30 Asia/Colombo, read-only)
+  setInterval(() => {
+    const colomboNow = new Date(Date.now() + COLOMBO_OFFSET_MS);
+    const dayStr = colomboNow.toISOString().slice(0, 10);
+    const hour = colomboNow.getUTCHours();
+    if (hour === 23 && lastNightlyReflectionDay !== dayStr) {
+      lastNightlyReflectionDay = dayStr;
+      void runBatchCognitiveReflection(24).catch((err) => {
+        logger.warn({ err }, "[Nightly Reflection] Scheduled batch reflection failed");
+      });
+    }
+  }, 15 * 60_000);
 }

@@ -55,6 +55,103 @@ export async function sendYCloudText(
   }
 }
 
+export async function uploadYCloudMedia(
+  buffer: Buffer,
+  mimeType: string,
+  fileName: string,
+): Promise<string> {
+  const apiKey = process.env.YCLOUD_API_KEY;
+  const from = process.env.YCLOUD_FROM_NUMBER;
+  if (!apiKey || !from) {
+    throw new Error("YCloud API key and sender phone number are required");
+  }
+
+  const form = new FormData();
+  const blob = new Blob([new Uint8Array(buffer)], { type: mimeType || "image/jpeg" });
+  form.append("file", blob, fileName || "image.jpg");
+
+  const uploadUrl = `https://api.ycloud.com/v2/whatsapp/media/${encodeURIComponent(from)}/upload`;
+  const response = await fetch(uploadUrl, {
+    method: "POST",
+    headers: {
+      "X-API-Key": apiKey,
+    },
+    body: form,
+    signal: AbortSignal.timeout(25_000),
+  });
+
+  const responseText = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      `YCloud media upload failed (${response.status}): ${responseText.slice(0, 400)}`,
+    );
+  }
+
+  const parsed: unknown = JSON.parse(responseText);
+  if (parsed && typeof parsed === "object" && "id" in parsed) {
+    const id = (parsed as { id?: unknown }).id;
+    if (typeof id === "string" && id.trim()) {
+      return id.trim();
+    }
+  }
+  throw new Error("YCloud media upload did not return a valid media id");
+}
+
+export async function sendYCloudImage(
+  to: string,
+  image: { id?: string; link?: string; caption?: string },
+  externalId: string,
+): Promise<string | null> {
+  const apiKey = process.env.YCLOUD_API_KEY;
+  const from = process.env.YCLOUD_FROM_NUMBER;
+  if (!apiKey || !from) {
+    throw new Error("YCloud API key and sender phone number are required");
+  }
+  if (!image.id && !image.link) {
+    throw new Error("Either media id or image link is required");
+  }
+
+  const imagePayload: Record<string, string> = {};
+  if (image.id) imagePayload.id = image.id;
+  else if (image.link) imagePayload.link = image.link;
+  if (image.caption?.trim()) imagePayload.caption = image.caption.trim();
+
+  const response = await fetch(YCLOUD_SEND_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-API-Key": apiKey,
+    },
+    body: JSON.stringify({
+      from,
+      to,
+      type: "image",
+      image: imagePayload,
+      externalId,
+    }),
+    signal: AbortSignal.timeout(20_000),
+  });
+
+  const responseText = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      `YCloud rejected the image message (${response.status}): ${responseText.slice(0, 400)}`,
+    );
+  }
+
+  if (!responseText.trim()) return null;
+  try {
+    const result: unknown = JSON.parse(responseText);
+    if (result && typeof result === "object" && "id" in result) {
+      const id = (result as { id?: unknown }).id;
+      return typeof id === "string" ? id : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Dispatches a WhatsApp typing status indicator while the AI model is thinking.
  * Fire-and-forget: Catches all errors internally so it never blocks or interrupts the AI execution thread.

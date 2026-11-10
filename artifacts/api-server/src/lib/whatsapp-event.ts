@@ -6,6 +6,32 @@ export interface ParsedInboundMessage {
   body: string;
   name: string | null;
   type: string;
+  mediaUrl?: string;
+  mediaCaption?: string;
+}
+
+const IMAGE_PREFIX_REGEX = /^\[IMAGE:(https?:\/\/[^\]]+|\/api\/[^\]]+)\](?:\n([\s\S]*))?$/;
+
+export function formatMediaMessageBody(
+  mediaUrl: string,
+  caption?: string | null,
+): string {
+  const cleanCaption = caption?.trim() ?? "";
+  return cleanCaption ? `[IMAGE:${mediaUrl}]\n${cleanCaption}` : `[IMAGE:${mediaUrl}]`;
+}
+
+export function parseMediaMessageBody(body: string): {
+  mediaUrl: string | null;
+  caption: string;
+} {
+  const match = body.match(IMAGE_PREFIX_REGEX);
+  if (!match) {
+    return { mediaUrl: null, caption: body };
+  }
+  return {
+    mediaUrl: match[1] ?? null,
+    caption: (match[2] ?? "").trim(),
+  };
 }
 
 export function asJsonObject(value: unknown): JsonObject | undefined {
@@ -48,6 +74,35 @@ export function isGroupChatEvent(payload: JsonObject): boolean {
   );
 }
 
+function extractMediaFromPayload(message: JsonObject, type: string): {
+  mediaUrl?: string;
+  mediaCaption?: string;
+} {
+  const mediaObj =
+    asJsonObject(message[type]) ??
+    asJsonObject(message.image) ??
+    asJsonObject(message.document) ??
+    asJsonObject(message.video) ??
+    asJsonObject(message.audio);
+
+  if (!mediaObj) return {};
+
+  const link = typeof mediaObj.link === "string" ? mediaObj.link.trim() : "";
+  const url = typeof mediaObj.url === "string" ? mediaObj.url.trim() : "";
+  const rawUrl = link || url;
+  const mediaUrl =
+    rawUrl && (rawUrl.startsWith("https://") || rawUrl.startsWith("http://"))
+      ? rawUrl
+      : undefined;
+
+  const mediaCaption =
+    typeof mediaObj.caption === "string" && mediaObj.caption.trim()
+      ? mediaObj.caption.trim().slice(0, 2000)
+      : undefined;
+
+  return { mediaUrl, mediaCaption };
+}
+
 export function parseInboundMessage(payload: JsonObject): ParsedInboundMessage | undefined {
   const message = asJsonObject(payload.whatsappInboundMessage);
   if (!message) return undefined;
@@ -61,12 +116,26 @@ export function parseInboundMessage(payload: JsonObject): ParsedInboundMessage |
       : typeof message.id === "string"
         ? message.id
         : "";
-  const body =
-    typeof text?.body === "string" ? text.body.trim().slice(0, 4000) : "";
-  const name = typeof profile?.name === "string" ? profile.name.slice(0, 120) : null;
   const type = typeof message.type === "string" ? message.type : "unknown";
+  const { mediaUrl, mediaCaption } = extractMediaFromPayload(message, type);
 
-  return { phoneValue, providerMessageId, body, name, type };
+  const rawTextBody =
+    typeof text?.body === "string" ? text.body.trim().slice(0, 4000) : "";
+  const body =
+    type === "image" && mediaUrl
+      ? formatMediaMessageBody(mediaUrl, mediaCaption || rawTextBody)
+      : rawTextBody || mediaCaption || "";
+  const name = typeof profile?.name === "string" ? profile.name.slice(0, 120) : null;
+
+  return {
+    phoneValue,
+    providerMessageId,
+    body,
+    name,
+    type,
+    mediaUrl,
+    mediaCaption,
+  };
 }
 
 export interface ParsedStaffOutboundMessage {
@@ -80,6 +149,8 @@ export interface ParsedStaffOutboundMessage {
   type: string;
   /** Emoji of an admin reaction (type === "reaction"). */
   reactionEmoji?: string;
+  mediaUrl?: string;
+  mediaCaption?: string;
 }
 
 /** Inbound event types that must never reach the AI or produce any reply. */
@@ -114,10 +185,14 @@ export function parseStaffOutboundMessage(
   const text = asJsonObject(message.text);
   const reaction = asJsonObject(message.reaction);
   const reactionEmoji = typeof reaction?.emoji === "string" ? reaction.emoji : undefined;
+  const { mediaUrl, mediaCaption } = extractMediaFromPayload(message, type);
+
   const body =
-    typeof text?.body === "string"
-      ? text.body.trim().slice(0, 4000)
-      : `[WhatsApp ${type} message]`;
+    type === "image" && mediaUrl
+      ? formatMediaMessageBody(mediaUrl, mediaCaption)
+      : typeof text?.body === "string"
+        ? text.body.trim().slice(0, 4000)
+        : mediaCaption || `[WhatsApp ${type} message]`;
 
   const providerMessageId =
     typeof message.wamid === "string"
@@ -145,5 +220,7 @@ export function parseStaffOutboundMessage(
     status,
     type,
     reactionEmoji,
+    mediaUrl,
+    mediaCaption,
   };
 }

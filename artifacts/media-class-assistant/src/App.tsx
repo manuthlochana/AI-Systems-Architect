@@ -262,6 +262,33 @@ function AppContent() {
     },
   });
 
+  const runReflectionMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/admin/suggestions/reflect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ hoursBack: 48 }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to run cognitive reflection');
+      }
+      return (await res.json()) as {
+        ok: boolean;
+        analyzedConversations: number;
+        suggestionsCreated: number;
+      };
+    },
+    onSuccess: (data) => {
+      setNotice(
+        `AI Cognitive Reflection complete: analyzed ${data.analyzedConversations} staff chats (all PII scrubbed) and distilled ${data.suggestionsCreated} new FAQ/policy suggestion(s).`
+      );
+      void client.invalidateQueries({ queryKey: getGetSuggestedKnowledgeItemsQueryKey() });
+    },
+    onError: (err) => setNotice(`Reflection failed: ${errorText(err)}`),
+  });
+
   // Derived state
   const conversations = conversationsQuery.data ?? [];
   const handoffQueue = conversations.filter((item) => item.mode === 'human');
@@ -767,6 +794,19 @@ function AppContent() {
                         </button>
                       ))}
                     </div>
+
+                    <button
+                      onClick={() => runReflectionMutation.mutate()}
+                      disabled={runReflectionMutation.isPending}
+                      className="px-3.5 py-1.5 bg-primary text-primary-foreground font-semibold rounded-xl text-xs hover:opacity-90 transition-opacity flex items-center gap-1.5 shadow-sm disabled:opacity-50"
+                    >
+                      {runReflectionMutation.isPending ? (
+                        <RefreshCw size={13} className="animate-spin" />
+                      ) : (
+                        <Sparkles size={13} />
+                      )}
+                      {runReflectionMutation.isPending ? 'Distilling Chats…' : 'Run AI Reflection Now'}
+                    </button>
 
                     <button
                       onClick={() => void suggestionsQuery.refetch()}
